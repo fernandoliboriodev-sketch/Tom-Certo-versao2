@@ -101,3 +101,34 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Redesign premium OLED do app Tom Certo — consistência total entre index.tsx e ActivationScreen.tsx com fundo preto (#000), acentos dourados (#FFB020), logo transparente (sem caixa/borda) e input minimalista com underline dourado."
+
+frontend:
+  - task: "Premium OLED redesign — index.tsx + ActivationScreen.tsx + logo transparente"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/index.tsx, /app/frontend/src/auth/ActivationScreen.tsx, /app/frontend/assets/images/logo-icon.png"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Extraído via PIL/scipy apenas o ícone dourado (nota+microfone) do logo original e salvo como /app/frontend/assets/images/logo-icon.png (512x512, fundo 100% transparente, sem caixa nem texto 'TOM CERTO'). ActivationScreen reescrito do zero com layout premium: logo transparente no topo → 'Tom Certo' → tagline → input minimalista SEM card (apenas underline dourado animado em foco) → botão dourado CTA → rodapé discreto. index.tsx atualizado para usar o novo logo-icon.png tanto no InitialScreen quanto no headerLogo do DetectedScreen. Validado via screenshot em 390x844 — visual sóbrio, sem borda/box, nível Shazam/Spotify."
+
+metadata:
+  created_by: "main_agent"
+  version: "2.0"
+  test_sequence: 0
+
+test_plan:
+  current_focus:
+    - "Validar visual do redesign em dispositivo real (APK)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "none"
+
+agent_communication:
+    - agent: "main"
+      message: "Redesign premium OLED finalizado. Novo logo-icon.png extraído (só a nota+microfone dourada, fundo transparente) substitui o logo-clean.png anterior em ambas as telas. ActivationScreen agora usa underline dourado minimalista (sem card). Screenshots validados mostrando consistência total entre as duas telas."

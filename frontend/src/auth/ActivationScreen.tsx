@@ -29,23 +29,20 @@ import {
 } from '@expo-google-fonts/manrope';
 import { useAuth } from './AuthContext';
 
-const { width: SW } = Dimensions.get('window');
+const { height: SH } = Dimensions.get('window');
 
+// ─── Design tokens (matching index.tsx) ─────────────────────────────────────
 const C = {
-  bg: '#0A0A0A',
-  surface: '#141414',
-  surfaceHigh: '#1C1C1C',
-  amber: '#FFB020',
-  amberSoft: '#E6A010',
-  amberMuted: 'rgba(255,176,32,0.10)',
-  amberBorder: 'rgba(255,176,32,0.35)',
-  white: '#FFFFFF',
-  text2: '#A1A1AA',
-  text3: '#52525B',
-  border: '#1F1F1F',
-  red: '#EF4444',
-  redMuted: 'rgba(239,68,68,0.12)',
-  redBorder: 'rgba(239,68,68,0.35)',
+  bg:           '#000000',
+  surface:      '#0B0B0B',
+  amber:        '#FFB020',
+  amberDim:     'rgba(255,176,32,0.35)',
+  amberFaint:   'rgba(255,176,32,0.15)',
+  white:        '#FFFFFF',
+  text2:        '#A0A0A0',
+  text3:        '#555555',
+  red:          '#EF4444',
+  redFaint:     'rgba(239,68,68,0.10)',
 };
 
 export default function ActivationScreen() {
@@ -60,18 +57,27 @@ export default function ActivationScreen() {
   const { activate, errorMessage, clearError } = useAuth();
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [focused, setFocused] = useState(false);
 
+  // Entrance anims
   const fade = useRef(new Animated.Value(0)).current;
-  const slide = useRef(new Animated.Value(22)).current;
-  const ringPulse = useRef(new Animated.Value(1)).current;
+  const slide = useRef(new Animated.Value(24)).current;
+
+  // Logo subtle breath glow
+  const logoGlow = useRef(new Animated.Value(0.75)).current;
+
+  // Error shake
   const errorShake = useRef(new Animated.Value(0)).current;
+
+  // Focus underline glow
+  const underlineScale = useRef(new Animated.Value(0.6)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(fade, { toValue: 1, duration: 600, useNativeDriver: true }),
+      Animated.timing(fade, { toValue: 1, duration: 650, useNativeDriver: true }),
       Animated.timing(slide, {
         toValue: 0,
-        duration: 600,
+        duration: 650,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
@@ -79,15 +85,15 @@ export default function ActivationScreen() {
 
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(ringPulse, {
-          toValue: 1.15,
-          duration: 1700,
+        Animated.timing(logoGlow, {
+          toValue: 1,
+          duration: 2000,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
-        Animated.timing(ringPulse, {
-          toValue: 1,
-          duration: 1700,
+        Animated.timing(logoGlow, {
+          toValue: 0.75,
+          duration: 2000,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
@@ -96,6 +102,15 @@ export default function ActivationScreen() {
     loop.start();
     return () => loop.stop();
   }, []);
+
+  useEffect(() => {
+    Animated.timing(underlineScale, {
+      toValue: focused || code.length > 0 ? 1 : 0.6,
+      duration: 260,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [focused, code]);
 
   useEffect(() => {
     if (errorMessage) {
@@ -124,103 +139,100 @@ export default function ActivationScreen() {
 
   if (!fontsLoaded) {
     return (
-      <View style={styles.splash}>
-        <Text style={styles.splashText}>Tom Certo</Text>
+      <View style={ss.splash}>
+        <Text style={ss.splashTxt}>Tom Certo</Text>
       </View>
     );
   }
 
+  const canSubmit = !busy && code.trim().length > 0;
+
   return (
-    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+    <SafeAreaView style={ss.safe} edges={['top', 'bottom']}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={ss.scroll}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
           <Animated.View
-            style={[styles.container, { opacity: fade, transform: [{ translateY: slide }] }]}
+            style={[ss.container, { opacity: fade, transform: [{ translateY: slide }] }]}
           >
-            {/* Brand */}
-            <View style={styles.brandWrap}>
-              <Animated.View style={[styles.brandArea, { transform: [{ scale: ringPulse }] }]}>
-                <View style={styles.ringOuter} />
-                <View style={styles.ringMid} />
-                <View style={styles.logoCircle}>
-                  <Image
-                    source={require('../../assets/images/icon.png')}
-                    style={styles.logoImg}
-                    resizeMode="contain"
-                  />
+            {/* ── Brand block ── */}
+            <View style={ss.brandBlock}>
+              <Animated.Image
+                source={require('../../assets/images/logo-icon.png')}
+                style={[ss.logo, { opacity: logoGlow }]}
+                resizeMode="contain"
+              />
+              <Text style={ss.appName}>Tom Certo</Text>
+              <Text style={ss.tagline}>Detector de tonalidade</Text>
+            </View>
+
+            {/* ── Input: minimalist underline ── */}
+            <Animated.View style={[ss.inputBlock, { transform: [{ translateX: errorShake }] }]}>
+              <Text style={ss.inputLabel}>TOKEN DE ACESSO</Text>
+              <TextInput
+                testID="activation-code-input"
+                style={ss.input}
+                value={code}
+                onChangeText={onChangeCode}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                onSubmitEditing={onSubmit}
+                placeholder="XXXX-XXXXXX"
+                placeholderTextColor={C.text3}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                maxLength={20}
+                returnKeyType="done"
+                selectionColor={C.amber}
+                underlineColorAndroid="transparent"
+              />
+              {/* Base underline */}
+              <View style={ss.underlineBase} />
+              {/* Active underline grows from center */}
+              <Animated.View
+                style={[
+                  ss.underlineActive,
+                  {
+                    transform: [{ scaleX: underlineScale }],
+                    opacity: focused || code.length > 0 ? 1 : 0.5,
+                  },
+                ]}
+              />
+
+              {errorMessage ? (
+                <View style={ss.errorRow}>
+                  <Ionicons name="alert-circle" size={15} color={C.red} />
+                  <Text style={ss.errorTxt} numberOfLines={3}>{errorMessage}</Text>
                 </View>
-              </Animated.View>
-              <Text style={styles.appName}>Tom Certo</Text>
-              <Text style={styles.appTagline}>Detector de tonalidade</Text>
-            </View>
-
-            {/* Headline */}
-            <View style={styles.headlineArea}>
-              <Text style={styles.headline}>Ativação de acesso</Text>
-              <Text style={styles.sub}>
-                Digite o código que você recebeu para liberar o app.
-              </Text>
-            </View>
-
-            {/* Input card */}
-            <Animated.View style={{ transform: [{ translateX: errorShake }], width: '100%' }}>
-              <View style={styles.inputCard}>
-                <Text style={styles.inputLabel}>TOKEN DE ACESSO</Text>
-                <TextInput
-                  testID="activation-code-input"
-                  style={styles.input}
-                  value={code}
-                  onChangeText={onChangeCode}
-                  onSubmitEditing={onSubmit}
-                  placeholder="XXXX-XXXXXX"
-                  placeholderTextColor={C.text3}
-                  autoCapitalize="characters"
-                  autoCorrect={false}
-                  maxLength={20}
-                  returnKeyType="done"
-                />
-                {errorMessage ? (
-                  <View style={styles.errorBox}>
-                    <Ionicons name="alert-circle" size={16} color={C.red} />
-                    <Text style={styles.errorTxt}>{errorMessage}</Text>
-                  </View>
-                ) : null}
-              </View>
+              ) : null}
             </Animated.View>
 
-            {/* Activate button */}
+            {/* ── Primary CTA ── */}
             <TouchableOpacity
               testID="activate-btn"
-              style={[
-                styles.primaryBtn,
-                (busy || !code.trim()) && styles.primaryBtnDisabled,
-              ]}
+              style={[ss.primaryBtn, !canSubmit && ss.primaryBtnDisabled]}
               onPress={onSubmit}
-              disabled={busy || !code.trim()}
-              activeOpacity={0.85}
+              disabled={!canSubmit}
+              activeOpacity={0.88}
             >
               {busy ? (
                 <ActivityIndicator color={C.bg} size="small" />
               ) : (
-                <>
-                  <Ionicons name="checkmark-circle" size={20} color={C.bg} />
-                  <Text style={styles.primaryBtnTxt}>Ativar acesso</Text>
-                </>
+                <Text style={ss.primaryBtnTxt}>Ativar acesso</Text>
               )}
             </TouchableOpacity>
 
-            {/* Footer */}
-            <View style={styles.footer}>
-              <Ionicons name="lock-closed-outline" size={12} color={C.text3} />
-              <Text style={styles.footerTxt}>
-                Seu acesso fica salvo no dispositivo — você não precisará digitar novamente.
+            {/* ── Footer ── */}
+            <View style={ss.footer}>
+              <Ionicons name="lock-closed-outline" size={11} color={C.text3} />
+              <Text style={ss.footerTxt}>
+                Seu acesso fica salvo neste dispositivo
               </Text>
             </View>
           </Animated.View>
@@ -230,7 +242,7 @@ export default function ActivationScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const ss = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
   splash: {
     flex: 1,
@@ -238,115 +250,103 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  splashText: { fontSize: 28, fontWeight: '800', color: C.amber },
-  scroll: { flexGrow: 1, justifyContent: 'center', paddingVertical: 24 },
-  container: {
-    paddingHorizontal: 28,
-    alignItems: 'center',
-    gap: 0,
+  splashTxt: {
+    fontSize: 28,
+    fontFamily: 'Outfit_800ExtraBold',
+    color: C.amber,
+    letterSpacing: -0.5,
   },
 
-  brandWrap: { alignItems: 'center', marginTop: 12 },
-  brandArea: {
-    width: 160,
-    height: 160,
-    alignItems: 'center',
+  scroll: {
+    flexGrow: 1,
     justifyContent: 'center',
+    paddingVertical: 40,
   },
-  ringOuter: {
-    position: 'absolute',
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-    opacity: 0.3,
-  },
-  ringMid: {
-    position: 'absolute',
-    width: 125,
-    height: 125,
-    borderRadius: 62,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-    opacity: 0.5,
-  },
-  logoCircle: {
-    width: 96,
-    height: 96,
+  container: {
+    paddingHorizontal: 32,
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  logoImg: { width: 96, height: 96 },
+
+  // Brand
+  brandBlock: {
+    alignItems: 'center',
+    marginBottom: SH * 0.08,
+  },
+  logo: {
+    width: 110,
+    height: 110,
+    marginBottom: 18,
+  },
   appName: {
     fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 30,
+    fontSize: 34,
     color: C.white,
-    letterSpacing: -0.8,
-    marginTop: 6,
-  },
-  appTagline: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 12,
-    color: C.text3,
-    marginTop: 2,
-    letterSpacing: 1.4,
-    textTransform: 'uppercase',
-  },
-
-  headlineArea: { alignItems: 'center', marginTop: 28, marginBottom: 16, paddingHorizontal: 8 },
-  headline: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 22,
-    color: C.white,
-    letterSpacing: -0.4,
-  },
-  sub: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 14,
-    color: C.text2,
+    letterSpacing: -1,
     textAlign: 'center',
+  },
+  tagline: {
+    fontFamily: 'Manrope_500Medium',
+    fontSize: 11,
+    color: C.text3,
+    letterSpacing: 3,
+    textTransform: 'uppercase',
     marginTop: 6,
-    lineHeight: 20,
-    maxWidth: SW - 80,
   },
 
-  inputCard: {
+  // Input — minimalist underline (NO card)
+  inputBlock: {
     width: '100%',
-    backgroundColor: C.surface,
-    borderWidth: 1,
-    borderColor: C.border,
-    borderRadius: 18,
-    padding: 16,
-    marginBottom: 14,
+    alignItems: 'center',
+    marginBottom: 36,
   },
   inputLabel: {
     fontFamily: 'Manrope_600SemiBold',
     fontSize: 10,
     color: C.amber,
-    letterSpacing: 2.4,
-    marginBottom: 8,
+    letterSpacing: 3,
+    marginBottom: 14,
+    alignSelf: 'center',
   },
   input: {
+    width: '100%',
     fontFamily: 'Outfit_700Bold',
     fontSize: 22,
     color: C.white,
-    letterSpacing: 3,
-    paddingVertical: 10,
-    paddingHorizontal: 4,
+    letterSpacing: 4,
     textAlign: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    ...Platform.select({ web: { outlineWidth: 0 as any } as any, default: {} }),
   },
-  errorBox: {
+  underlineBase: {
+    width: '100%',
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  underlineActive: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: C.amber,
+    ...Platform.select({
+      ios: {
+        shadowColor: C.amber,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.7,
+        shadowRadius: 6,
+      },
+      default: {},
+    }),
+  },
+
+  errorRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 6,
-    backgroundColor: C.redMuted,
-    borderWidth: 1,
-    borderColor: C.redBorder,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    marginTop: 10,
+    marginTop: 14,
+    paddingHorizontal: 4,
   },
   errorTxt: {
     flex: 1,
@@ -356,47 +356,50 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 
+  // Primary button
   primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
     width: '100%',
     height: 56,
     borderRadius: 99,
     backgroundColor: C.amber,
+    alignItems: 'center',
+    justifyContent: 'center',
     ...Platform.select({
       ios: {
         shadowColor: C.amber,
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.35,
-        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.45,
+        shadowRadius: 20,
       },
-      android: { elevation: 6 },
+      android: { elevation: 8 },
       default: {},
     }),
   },
-  primaryBtnDisabled: { opacity: 0.5 },
+  primaryBtnDisabled: {
+    backgroundColor: 'rgba(255,176,32,0.25)',
+    ...Platform.select({
+      ios: { shadowOpacity: 0 },
+      android: { elevation: 0 },
+      default: {},
+    }),
+  },
   primaryBtnTxt: {
     fontFamily: 'Outfit_700Bold',
     fontSize: 16,
     color: C.bg,
-    letterSpacing: 0.3,
+    letterSpacing: 0.5,
   },
 
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 18,
-    paddingHorizontal: 12,
+    marginTop: 24,
   },
   footerTxt: {
-    flex: 1,
-    fontFamily: 'Manrope_400Regular',
+    fontFamily: 'Manrope_500Medium',
     fontSize: 11,
     color: C.text3,
-    lineHeight: 16,
-    textAlign: 'left',
+    letterSpacing: 0.3,
   },
 });

@@ -1,10 +1,9 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  StatusBar,
   Animated,
   Dimensions,
   Easing,
@@ -35,26 +34,24 @@ import {
 } from '../src/utils/noteUtils';
 import { useAuth } from '../src/auth/AuthContext';
 
-const { width: SW } = Dimensions.get('window');
+const { width: SW, height: SH } = Dimensions.get('window');
 
+// ─── Design tokens (premium dark) ────────────────────────────────────────────
 const C = {
-  bg: '#0A0A0A',
-  surface: '#141414',
-  surfaceHigh: '#1C1C1C',
-  amber: '#FFB020',
-  amberSoft: '#E6A010',
-  amberMuted: 'rgba(255,176,32,0.10)',
-  amberBorder: 'rgba(255,176,32,0.35)',
-  amberGlow: 'rgba(255,176,32,0.30)',
-  white: '#FFFFFF',
-  text2: '#A1A1AA',
-  text3: '#52525B',
-  border: '#1F1F1F',
-  borderMid: '#2A2A2A',
-  red: '#EF4444',
-  redMuted: 'rgba(239,68,68,0.10)',
-  redBorder: 'rgba(239,68,68,0.35)',
-  green: '#22C55E',
+  bg:           '#000000',
+  surface:      '#111111',
+  surface2:     '#181818',
+  border:       '#1E1E1E',
+  amber:        '#FFB020',
+  amberGlow:    'rgba(255,176,32,0.40)',
+  amberMuted:   'rgba(255,176,32,0.10)',
+  amberBorder:  'rgba(255,176,32,0.28)',
+  white:        '#FFFFFF',
+  text2:        '#A0A0A0',
+  text3:        '#555555',
+  red:          '#EF4444',
+  redMuted:     'rgba(239,68,68,0.12)',
+  green:        '#22C55E',
 };
 
 export default function HomeScreen() {
@@ -89,36 +86,24 @@ export default function HomeScreen() {
 
   if (!fontsLoaded) {
     return (
-      <View style={styles.splash}>
-        <Text style={styles.splashText}>Tom Certo</Text>
+      <View style={ss.splash}>
+        <Text style={ss.splashTxt}>Tom Certo</Text>
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
-      <StatusBar barStyle="light-content" backgroundColor={C.bg} />
+    <SafeAreaView style={ss.safe} edges={['top', 'bottom']}>
       {screen === 'initial' && (
-        <InitialScreen
-          onStart={start}
-          errorMessage={errorMessage}
-          errorReason={errorReason}
-        />
+        <InitialScreen onStart={start} errorMessage={errorMessage} errorReason={errorReason} />
       )}
       {screen === 'listening' && (
-        <ListeningScreen
-          onStop={stop}
-          statusMessage={statusMessage}
-          currentNote={currentNote}
-          recentNotes={recentNotes}
-          softInfo={softInfo}
-        />
+        <ListeningScreen onStop={stop} statusMessage={statusMessage} currentNote={currentNote} softInfo={softInfo} />
       )}
       {screen === 'detected' && (
         <DetectedScreen
           currentKey={currentKey!}
           currentNote={currentNote}
-          recentNotes={recentNotes}
           isStable={isStable}
           isRunning={isRunning}
           statusMessage={statusMessage}
@@ -132,7 +117,7 @@ export default function HomeScreen() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SCREEN 1: Initial
+// SCREEN 1 — Initial (Shazam style)
 // ═════════════════════════════════════════════════════════════════════════════
 function InitialScreen({
   onStart,
@@ -144,151 +129,129 @@ function InitialScreen({
   errorReason: 'permission_denied' | 'permission_blocked' | 'platform_limit' | 'unknown' | null;
 }) {
   const { logout, session } = useAuth();
-  const [modalVisible, setModalVisible] = React.useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
   const prevErr = useRef<string | null>(null);
 
-  React.useEffect(() => {
-    if (errorMessage && errorMessage !== prevErr.current) {
-      setModalVisible(true);
-    }
+  useEffect(() => {
+    if (errorMessage && errorMessage !== prevErr.current) setModalVisible(true);
     prevErr.current = errorMessage;
   }, [errorMessage]);
 
-  const fade = useRef(new Animated.Value(0)).current;
-  const slide = useRef(new Animated.Value(24)).current;
-  const ringPulse = useRef(new Animated.Value(1)).current;
+  // Entrance animations
+  const fadeIn  = useRef(new Animated.Value(0)).current;
+  const slideUp = useRef(new Animated.Value(30)).current;
+
+  // Logo glow pulse
+  const logoGlow = useRef(new Animated.Value(0.6)).current;
+
+  // Mic rings — 3 waves expanding outward
+  const ring1 = useRef(new Animated.Value(0)).current;
+  const ring2 = useRef(new Animated.Value(0)).current;
+  const ring3 = useRef(new Animated.Value(0)).current;
+
+  // Mic button scale on press
   const micScale = useRef(new Animated.Value(1)).current;
-  const wave1 = useRef(new Animated.Value(0)).current;
-  const wave2 = useRef(new Animated.Value(0)).current;
-  const wave3 = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    // Entrance
     Animated.parallel([
-      Animated.timing(fade, { toValue: 1, duration: 600, useNativeDriver: true }),
-      Animated.timing(slide, {
-        toValue: 0,
-        duration: 600,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
+      Animated.timing(fadeIn,  { toValue: 1, duration: 700, useNativeDriver: true }),
+      Animated.timing(slideUp, { toValue: 0, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
     ]).start();
 
-    const ringLoop = Animated.loop(
+    // Logo subtle breath
+    const logoLoop = Animated.loop(
       Animated.sequence([
-        Animated.timing(ringPulse, { toValue: 1.18, duration: 1600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(ringPulse, { toValue: 1, duration: 1600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(logoGlow, { toValue: 1,   duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(logoGlow, { toValue: 0.6, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       ])
     );
-    ringLoop.start();
+    logoLoop.start();
 
-    const micLoop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(micScale, { toValue: 1.08, duration: 1200, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(micScale, { toValue: 1, duration: 1200, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ])
-    );
-    micLoop.start();
-
-    const makeWave = (val: Animated.Value, delay: number) =>
+    // Sonar rings — staggered
+    const makeRing = (val: Animated.Value, delay: number) =>
       Animated.loop(
         Animated.sequence([
           Animated.delay(delay),
-          Animated.timing(val, { toValue: 1, duration: 2400, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+          Animated.timing(val, { toValue: 1, duration: 2200, easing: Easing.out(Easing.ease), useNativeDriver: true }),
           Animated.timing(val, { toValue: 0, duration: 0, useNativeDriver: true }),
         ])
       );
-    const w1 = makeWave(wave1, 0);
-    const w2 = makeWave(wave2, 800);
-    const w3 = makeWave(wave3, 1600);
-    w1.start(); w2.start(); w3.start();
+    const r1 = makeRing(ring1, 0);
+    const r2 = makeRing(ring2, 700);
+    const r3 = makeRing(ring3, 1400);
+    r1.start(); r2.start(); r3.start();
 
-    return () => { ringLoop.stop(); micLoop.stop(); w1.stop(); w2.stop(); w3.stop(); };
+    return () => { logoLoop.stop(); r1.stop(); r2.stop(); r3.stop(); };
   }, []);
 
-  const renderWave = (val: Animated.Value) => (
+  const handlePressIn = () => {
+    Animated.spring(micScale, { toValue: 0.92, useNativeDriver: true }).start();
+  };
+  const handlePressOut = () => {
+    Animated.spring(micScale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
+  };
+
+  const renderRing = (val: Animated.Value) => (
     <Animated.View
-      style={[styles.initialWave, {
-        opacity: val.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.7, 0.3, 0] }),
-        transform: [{ scale: val.interpolate({ inputRange: [0, 1], outputRange: [1, 2.2] }) }],
+      style={[ss.micRing, {
+        opacity:   val.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 0.55, 0] }),
+        transform: [{ scale: val.interpolate({ inputRange: [0, 1], outputRange: [1, 2.8] }) }],
       }]}
     />
   );
 
   return (
-    <Animated.View style={[styles.initialContainer, { opacity: fade, transform: [{ translateY: slide }] }]}>
-      {/* Brand: logo sempre acima do nome */}
-      <View style={styles.initialBrandBlock}>
-        {/* Logo / Mic area */}
-        <View style={styles.initialLogoArea}>
-          <View style={styles.ringOuter} />
-          <View style={styles.ringMid} />
-          {renderWave(wave3)}
-          {renderWave(wave2)}
-          {renderWave(wave1)}
-          <Animated.View style={[styles.micCircleSimple, { transform: [{ scale: micScale }] }]}>
-            <Image
-              source={require('../assets/images/icon.png')}
-              style={styles.brandLogoLarge}
-              resizeMode="contain"
-            />
-          </Animated.View>
-        </View>
-        {/* Texto sempre abaixo da logo */}
-        <Text style={styles.initialAppName}>Tom Certo</Text>
-        <Text style={styles.initialTagline}>Detector de tonalidade</Text>
+    <Animated.View style={[ss.initialRoot, { opacity: fadeIn, transform: [{ translateY: slideUp }] }]}>
+
+      {/* ── BRAND BLOCK: Logo + Nome ── */}
+      <View style={ss.brandBlock}>
+        <Animated.Image
+          source={require('../assets/images/logo-icon.png')}
+          style={[ss.logoClean, { opacity: logoGlow }]}
+          resizeMode="contain"
+        />
+        <Text style={ss.appName}>Tom Certo</Text>
       </View>
 
-      {/* Instructions */}
-      <View style={styles.instructions}>
-        <Text style={styles.instructionsTitle}>Pronto para ouvir</Text>
-        <Text style={styles.instructionsBody}>
-          Toque no botão abaixo e comece a cantar ou tocar seu instrumento.{'\n'}
-          Vamos identificar o tom automaticamente.
-        </Text>
+      {/* ── MIC SECTION: Shazam-style CTA ── */}
+      <View style={ss.micSection}>
+        {renderRing(ring3)}
+        {renderRing(ring2)}
+        {renderRing(ring1)}
+
+        <Animated.View style={{ transform: [{ scale: micScale }] }}>
+          <TouchableOpacity
+            testID="start-detection-btn"
+            style={ss.micBtn}
+            onPress={onStart}
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            activeOpacity={1}
+          >
+            <Ionicons name="mic" size={52} color={C.bg} />
+          </TouchableOpacity>
+        </Animated.View>
+
+        <Text style={ss.micLabel}>Toque para detectar</Text>
       </View>
 
-      {/* Error box (compact) */}
+      {/* Error box */}
       {errorMessage && !modalVisible ? (
-        <TouchableOpacity
-          testID="error-details-btn"
-          style={styles.errorBox}
-          onPress={() => setModalVisible(true)}
-          activeOpacity={0.7}
-        >
+        <TouchableOpacity testID="error-details-btn" style={ss.errorBox} onPress={() => setModalVisible(true)} activeOpacity={0.7}>
           <Ionicons name="alert-circle" size={16} color={C.red} />
-          <Text style={styles.errorText} numberOfLines={2}>{errorMessage}</Text>
-          <Text style={[styles.errorText, { color: C.text3, fontSize: 11 }]}>Toque para detalhes</Text>
+          <Text style={ss.errorTxt} numberOfLines={2}>{errorMessage}</Text>
         </TouchableOpacity>
       ) : null}
 
-      {/* Start button */}
-      <View style={styles.initialBtnArea}>
-        <TouchableOpacity
-          testID="start-detection-btn"
-          style={styles.primaryBtn}
-          onPress={onStart}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="mic" size={22} color={C.bg} />
-          <Text style={styles.primaryBtnTxt}>Iniciar Detecção</Text>
-        </TouchableOpacity>
-        <Text style={styles.hintBelowBtn}>Precisamos acessar seu microfone</Text>
+      {/* ── BOTTOM: Logout ── */}
+      <TouchableOpacity testID="logout-btn" style={ss.logoutBtn} onPress={logout} activeOpacity={0.6}>
+        <Ionicons name="log-out-outline" size={13} color={C.text3} />
+        <Text style={ss.logoutTxt}>
+          Sair{session?.customer_name ? ` · ${session.customer_name}` : ''}
+        </Text>
+      </TouchableOpacity>
 
-        {/* Logout */}
-        <TouchableOpacity
-          testID="logout-btn"
-          style={styles.logoutBtn}
-          onPress={logout}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="log-out-outline" size={14} color={C.text3} />
-          <Text style={styles.logoutTxt}>
-            Sair{session?.customer_name ? ` · ${session.customer_name}` : ''}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Error modal */}
       <MicNoticeModal
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
@@ -301,133 +264,106 @@ function InitialScreen({
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SCREEN 2: Listening
+// SCREEN 2 — Listening
 // ═════════════════════════════════════════════════════════════════════════════
 function ListeningScreen({
   onStop,
   statusMessage,
   currentNote,
-  recentNotes,
   softInfo,
 }: {
   onStop: () => void;
   statusMessage: string;
   currentNote: number | null;
-  recentNotes: number[];
   softInfo: string | null;
 }) {
   const pulse1 = useRef(new Animated.Value(0)).current;
   const pulse2 = useRef(new Animated.Value(0)).current;
   const pulse3 = useRef(new Animated.Value(0)).current;
-  const micPulse = useRef(new Animated.Value(1)).current;
   const noteOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const makePulse = (val: Animated.Value, delay: number) =>
+    const mkPulse = (v: Animated.Value, delay: number) =>
       Animated.loop(
         Animated.sequence([
           Animated.delay(delay),
-          Animated.timing(val, { toValue: 1, duration: 1800, easing: Easing.out(Easing.ease), useNativeDriver: true }),
-          Animated.timing(val, { toValue: 0, duration: 0, useNativeDriver: true }),
+          Animated.timing(v, { toValue: 1, duration: 1400, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+          Animated.timing(v, { toValue: 0, duration: 0, useNativeDriver: true }),
         ])
       );
-    const a1 = makePulse(pulse1, 0);
-    const a2 = makePulse(pulse2, 600);
-    const a3 = makePulse(pulse3, 1200);
+    const a1 = mkPulse(pulse1, 0);
+    const a2 = mkPulse(pulse2, 450);
+    const a3 = mkPulse(pulse3, 900);
     a1.start(); a2.start(); a3.start();
-
-    const micLoop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(micPulse, { toValue: 1.08, duration: 750, useNativeDriver: true }),
-        Animated.timing(micPulse, { toValue: 1, duration: 750, useNativeDriver: true }),
-      ])
-    );
-    micLoop.start();
-
-    return () => { a1.stop(); a2.stop(); a3.stop(); micLoop.stop(); };
+    return () => { a1.stop(); a2.stop(); a3.stop(); };
   }, []);
 
   useEffect(() => {
     Animated.timing(noteOpacity, {
       toValue: currentNote !== null ? 1 : 0,
-      duration: 250,
+      duration: 200,
       useNativeDriver: true,
     }).start();
   }, [currentNote]);
 
-  const renderRing = (val: Animated.Value) => (
-    <Animated.View
-      style={[styles.listeningRing, {
-        opacity: val.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 0.6, 0] }),
-        transform: [{ scale: val.interpolate({ inputRange: [0, 1], outputRange: [1, 2.0] }) }],
-      }]}
-    />
+  const renderPulse = (v: Animated.Value) => (
+    <Animated.View style={[ss.listeningPulse, {
+      opacity: v.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.5, 0] }),
+      transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 2.6] }) }],
+    }]} />
   );
 
-  const stateLabel = statusMessage.includes('Ouvindo')
-    ? 'OUVINDO'
-    : statusMessage.includes('Confirmando')
-    ? 'CONFIRMANDO'
-    : statusMessage.includes('Refinando')
-    ? 'REFINANDO'
-    : 'ANALISANDO';
+  const stateLabel =
+    statusMessage.includes('Ouvindo') ? 'OUVINDO' :
+    statusMessage.includes('Confirmando') ? 'CONFIRMANDO' :
+    statusMessage.includes('Refinando') ? 'REFINANDO' : 'ANALISANDO';
 
   return (
-    <View style={styles.listeningContainer}>
-      <View style={styles.listeningTop}>
-        <Text style={styles.listeningLabel}>{stateLabel}</Text>
-        <Text style={styles.listeningStatus}>{statusMessage}</Text>
+    <View style={ss.listeningRoot}>
+      {/* Status */}
+      <View style={ss.listeningTop}>
+        <Text style={ss.listeningLabel}>{stateLabel}</Text>
       </View>
 
-      <View style={styles.listeningCenter}>
-        <View style={styles.listeningRingsWrap}>
-          {renderRing(pulse3)}
-          {renderRing(pulse2)}
-          {renderRing(pulse1)}
-          <Animated.View style={[styles.listeningMic, { transform: [{ scale: micPulse }] }]}>
-            <Ionicons name="mic" size={38} color={C.amber} />
-          </Animated.View>
+      {/* Center: mic with sonar */}
+      <View style={ss.listeningCenter}>
+        {renderPulse(pulse3)}
+        {renderPulse(pulse2)}
+        {renderPulse(pulse1)}
+        <View style={ss.micBtnActive}>
+          <Ionicons name="mic" size={52} color={C.bg} />
         </View>
-
-        <Animated.View style={[styles.liveNoteBox, { opacity: noteOpacity }]}>
-          <Text style={styles.liveNoteLabel}>NOTA AGORA</Text>
-          <Text style={styles.liveNoteBr}>
-            {currentNote !== null ? NOTES_BR[currentNote] : '—'}
-          </Text>
-          <Text style={styles.liveNoteIntl}>
-            {currentNote !== null ? `(${NOTES_INTL[currentNote]})` : ''}
-          </Text>
-        </Animated.View>
       </View>
 
-      <View style={styles.listeningBottom}>
-        {softInfo ? (
-          <View style={styles.softInfoBar}>
-            <Ionicons name="information-circle-outline" size={16} color={C.amber} />
-            <Text style={styles.softInfoTxt}>{softInfo}</Text>
-          </View>
-        ) : null}
-        <TouchableOpacity
-          testID="stop-btn"
-          style={styles.stopBtn}
-          onPress={onStop}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="stop-circle" size={20} color={C.red} />
-          <Text style={styles.stopBtnTxt}>Parar</Text>
-        </TouchableOpacity>
-      </View>
+      {/* Live note */}
+      <Animated.View style={[ss.liveNoteWrap, { opacity: noteOpacity }]}>
+        <Text style={ss.liveNoteBr}>{currentNote !== null ? NOTES_BR[currentNote] : '—'}</Text>
+        <Text style={ss.liveNoteIntl}>{currentNote !== null ? NOTES_INTL[currentNote] : ''}</Text>
+      </Animated.View>
+
+      {/* Soft info */}
+      {softInfo ? (
+        <View style={ss.softBar}>
+          <Ionicons name="information-circle-outline" size={15} color={C.amber} />
+          <Text style={ss.softBarTxt}>{softInfo}</Text>
+        </View>
+      ) : null}
+
+      {/* Stop */}
+      <TouchableOpacity testID="stop-btn" style={ss.stopBtn} onPress={onStop} activeOpacity={0.8}>
+        <Ionicons name="stop-circle" size={18} color={C.red} />
+        <Text style={ss.stopBtnTxt}>Parar</Text>
+      </TouchableOpacity>
     </View>
   );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SCREEN 3: Detected
+// SCREEN 3 — Detected
 // ═════════════════════════════════════════════════════════════════════════════
 function DetectedScreen({
   currentKey,
   currentNote,
-  recentNotes,
   isStable,
   isRunning,
   statusMessage,
@@ -437,7 +373,6 @@ function DetectedScreen({
 }: {
   currentKey: NonNullable<ReturnType<typeof useKeyDetection>['currentKey']>;
   currentNote: number | null;
-  recentNotes: number[];
   isStable: boolean;
   isRunning: boolean;
   statusMessage: string;
@@ -452,210 +387,145 @@ function DetectedScreen({
   );
 
   const keyOpacity = useRef(new Animated.Value(0)).current;
-  const keySlideY = useRef(new Animated.Value(14)).current;
+  const keyScale  = useRef(new Animated.Value(0.88)).current;
   const chordsOpacity = useRef(new Animated.Value(0)).current;
   const statusDot = useRef(new Animated.Value(1)).current;
-  const noteOpacity = useRef(new Animated.Value(0)).current;
   const prevKey = useRef('');
 
   useEffect(() => {
-    const keyStr = `${currentKey.root}-${currentKey.quality}`;
-    if (keyStr === prevKey.current) return;
-    prevKey.current = keyStr;
-
-    keyOpacity.setValue(0);
-    keySlideY.setValue(14);
-    chordsOpacity.setValue(0);
-
+    const k = `${currentKey.root}-${currentKey.quality}`;
+    if (k === prevKey.current) return;
+    prevKey.current = k;
+    keyOpacity.setValue(0); keyScale.setValue(0.88); chordsOpacity.setValue(0);
     Animated.sequence([
       Animated.parallel([
-        Animated.timing(keyOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-        Animated.spring(keySlideY, { toValue: 0, tension: 80, friction: 11, useNativeDriver: true }),
+        Animated.timing(keyOpacity, { toValue: 1, duration: 380, useNativeDriver: true }),
+        Animated.spring(keyScale,   { toValue: 1, tension: 70, friction: 10, useNativeDriver: true }),
       ]),
-      Animated.timing(chordsOpacity, { toValue: 1, duration: 350, useNativeDriver: true }),
+      Animated.timing(chordsOpacity, { toValue: 1, duration: 320, useNativeDriver: true }),
     ]).start();
   }, [currentKey.root, currentKey.quality]);
 
   useEffect(() => {
-    Animated.timing(noteOpacity, {
-      toValue: currentNote !== null ? 1 : 0,
-      duration: 180,
-      useNativeDriver: true,
-    }).start();
-  }, [currentNote]);
-
-  useEffect(() => {
-    if (isRunning) {
-      const loop = Animated.loop(
-        Animated.sequence([
-          Animated.timing(statusDot, { toValue: 0.25, duration: 750, useNativeDriver: true }),
-          Animated.timing(statusDot, { toValue: 1, duration: 750, useNativeDriver: true }),
-        ])
-      );
-      loop.start();
-      return () => loop.stop();
-    }
-    statusDot.setValue(0.5);
+    if (!isRunning) { statusDot.setValue(0.4); return; }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(statusDot, { toValue: 0.2, duration: 700, useNativeDriver: true }),
+        Animated.timing(statusDot, { toValue: 1,   duration: 700, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
   }, [isRunning]);
 
   return (
-    <View style={styles.detectedContainer}>
+    <View style={ss.detectedRoot}>
       {/* Header */}
-      <View style={styles.detectedHeader}>
-        <Image source={require('../assets/images/icon.png')} style={styles.headerLogoImg} resizeMode="contain" />
-        <Text style={styles.appName}>Tom Certo</Text>
-        <View style={styles.detectedStatusRow}>
-          <Animated.View
-            style={[styles.statusDot, {
-              backgroundColor: isRunning ? C.amber : C.text3,
-              opacity: statusDot,
-            }]}
-          />
-          <Text style={styles.detectedStatusTxt}>{statusMessage}</Text>
+      <View style={ss.detectedHeader}>
+        <Image source={require('../assets/images/logo-icon.png')} style={ss.headerLogo} resizeMode="contain" />
+        <Text style={ss.headerName}>Tom Certo</Text>
+        <View style={ss.statusRow}>
+          <Animated.View style={[ss.statusDot, { backgroundColor: isRunning ? C.amber : C.text3, opacity: statusDot }]} />
+          <Text style={ss.statusTxt} numberOfLines={1}>{statusMessage}</Text>
         </View>
       </View>
 
-      {/* Key card */}
-      <Animated.View style={[styles.keyCard, { opacity: keyOpacity, transform: [{ translateY: keySlideY }] }]}>
-        <Text style={styles.keyCardLabel}>TOM DETECTADO</Text>
-        <View style={styles.keyNoteRow}>
-          <Text style={styles.mainNoteBr}>{keyDisplay.noteBr}</Text>
-          <Text style={styles.noteIntlBadge}>({keyDisplay.noteIntl})</Text>
+      {/* Key hero */}
+      <Animated.View style={[ss.keyHero, { opacity: keyOpacity, transform: [{ scale: keyScale }] }]}>
+        <Text style={ss.keyHeroLabel}>TOM DETECTADO</Text>
+        <View style={ss.keyHeroRow}>
+          <Text style={ss.keyHeroNote}>{keyDisplay.noteBr}</Text>
+          <Text style={ss.keyHeroIntl}>({keyDisplay.noteIntl})</Text>
         </View>
-        <View style={styles.qualityPill}>
-          <Text style={styles.qualityText}>{keyDisplay.qualityLabel}</Text>
-        </View>
-      </Animated.View>
-
-      {/* Current note */}
-      <Animated.View style={[styles.currentNoteRow, { opacity: noteOpacity }]}>
-        <Text style={styles.currentNoteLabel}>NOTA AGORA</Text>
-        <View style={styles.currentNoteValue}>
-          <Text style={styles.currentNoteBr}>
-            {currentNote !== null ? NOTES_BR[currentNote] : '—'}
-          </Text>
-          <Text style={styles.currentNoteIntl}>
-            {currentNote !== null ? `(${NOTES_INTL[currentNote]})` : ''}
-          </Text>
+        <View style={ss.keyQualityPill}>
+          <Text style={ss.keyQualityTxt}>{keyDisplay.qualityLabel.toUpperCase()}</Text>
         </View>
       </Animated.View>
 
-      {/* Stability */}
-      <View style={styles.stabilityRow}>
-        <View style={[styles.stabilityDot, { backgroundColor: isStable ? C.green : C.amber }]} />
-        <Text style={[styles.stabilityTxt, { color: isStable ? C.green : C.amber }]}>
-          {isStable ? 'Estável no tom atual' : 'Refinando análise...'}
-        </Text>
+      {/* Stability + current note inline */}
+      <View style={ss.metaRow}>
+        <View style={ss.metaLeft}>
+          <View style={[ss.stableIndicator, { backgroundColor: isStable ? C.green : C.amber }]} />
+          <Text style={[ss.stableTxt, { color: isStable ? C.green : C.amber }]}>
+            {isStable ? 'Estável' : 'Refinando...'}
+          </Text>
+        </View>
+        {currentNote !== null && (
+          <View style={ss.metaRight}>
+            <Text style={ss.currentNoteLabel}>NOTA</Text>
+            <Text style={ss.currentNoteTxt}>{NOTES_BR[currentNote]}</Text>
+          </View>
+        )}
       </View>
 
       {/* Harmonic field */}
-      <Animated.View style={[styles.harmonicSection, { opacity: chordsOpacity }]}>
-        <Text style={styles.sectionLabel}>CAMPO HARMÔNICO</Text>
-        <View style={styles.chordGrid}>
+      <Animated.View style={{ opacity: chordsOpacity, flex: 1 }}>
+        <Text style={ss.sectionLabel}>CAMPO HARMÔNICO</Text>
+        <View style={ss.chordGrid}>
           {harmonicField.map((chord, i) => (
-            <View
-              key={i}
-              testID={`chord-card-${i}`}
-              style={[styles.chordCard, chord.isTonic && styles.chordCardTonic]}
-            >
-              <Text style={styles.chordDegree}>{degreeLabel(i, currentKey.quality)}</Text>
-              <Text style={[styles.chordLabel, chord.isTonic && styles.chordLabelTonic]}>
-                {chord.label}
-              </Text>
-              <Text style={styles.chordIntl}>{chordIntlLabel(chord.root, chord.quality)}</Text>
+            <View key={i} testID={`chord-${i}`}
+              style={[ss.chordCard, chord.isTonic && ss.chordCardTonic]}>
+              <Text style={ss.chordDegree}>{degreeLabel(i, currentKey.quality)}</Text>
+              <Text style={[ss.chordName, chord.isTonic && ss.chordNameTonic]}>{chord.label}</Text>
+              <Text style={ss.chordIntl}>{chordIntlLabel(chord.root, chord.quality)}</Text>
             </View>
           ))}
         </View>
       </Animated.View>
 
       {/* Actions */}
-      <View style={styles.detectedActions}>
+      <View style={ss.detectedActions}>
         {isRunning ? (
-          <TouchableOpacity
-            testID="stop-btn-detected"
-            style={styles.stopBtnLarge}
-            onPress={onStop}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="stop-circle" size={20} color={C.red} />
-            <Text style={styles.stopBtnLargeTxt}>Parar</Text>
+          <TouchableOpacity testID="stop-btn-detected" style={ss.actionBtnDanger} onPress={onStop} activeOpacity={0.8}>
+            <Ionicons name="stop-circle" size={18} color={C.red} />
+            <Text style={ss.actionBtnDangerTxt}>Parar</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity
-            testID="resume-btn"
-            style={styles.stopBtnLarge}
-            onPress={onResume}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="play-circle" size={20} color={C.green} />
-            <Text style={[styles.stopBtnLargeTxt, { color: C.green }]}>Continuar</Text>
+          <TouchableOpacity testID="resume-btn" style={ss.actionBtnGhost} onPress={onResume} activeOpacity={0.8}>
+            <Ionicons name="play-circle" size={18} color={C.green} />
+            <Text style={[ss.actionBtnGhostTxt, { color: C.green }]}>Continuar</Text>
           </TouchableOpacity>
         )}
-        <TouchableOpacity
-          testID="reset-btn"
-          style={styles.resetBtn}
-          onPress={onReset}
-          activeOpacity={0.7}
-        >
+        <TouchableOpacity testID="reset-btn" style={ss.actionBtnGhost} onPress={onReset} activeOpacity={0.7}>
           <Ionicons name="refresh" size={16} color={C.text2} />
-          <Text style={styles.resetBtnTxt}>Nova detecção</Text>
+          <Text style={ss.actionBtnGhostTxt}>Nova detecção</Text>
         </TouchableOpacity>
       </View>
     </View>
   );
 }
 
-// ─── Mic Notice Modal ────────────────────────────────────────────────────────
-function MicNoticeModal({
-  visible,
-  onClose,
-  onRetry,
-  reason,
-  message,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onRetry: () => void;
-  reason: 'permission_denied' | 'permission_blocked' | 'platform_limit' | 'unknown' | null;
-  message: string | null;
+// ═════════════════════════════════════════════════════════════════════════════
+// MicNoticeModal
+// ═════════════════════════════════════════════════════════════════════════════
+function MicNoticeModal({ visible, onClose, onRetry, reason, message }: {
+  visible: boolean; onClose: () => void; onRetry: () => void;
+  reason: string | null; message: string | null;
 }) {
-  const isPerm = reason === 'permission_denied' || reason === 'permission_blocked';
   const isBlocked = reason === 'permission_blocked';
-  const isLimit = reason === 'platform_limit';
-
-  const title = isPerm ? 'Acesso ao microfone' : isLimit ? 'Versão em desenvolvimento' : 'Aviso';
-  const iconName: any = isPerm ? 'mic-off' : isLimit ? 'construct-outline' : 'information-circle';
-  const iconColor = isPerm ? C.red : C.amber;
-
-  const openSettings = async () => {
-    try { await Linking.openSettings(); } catch { /* */ }
-  };
+  const isPerm    = reason === 'permission_denied' || isBlocked;
+  const isLimit   = reason === 'platform_limit';
+  const icon: any = isPerm ? 'mic-off' : isLimit ? 'construct-outline' : 'information-circle';
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
-          <View style={[styles.modalIcon, { borderColor: iconColor }]}>
-            <Ionicons name={iconName} size={28} color={iconColor} />
-          </View>
-          <Text style={styles.modalTitle}>{title}</Text>
-          <Text style={styles.modalMsg}>
-            {message || (isPerm ? 'Permita o acesso ao microfone para detectar o tom.' : 'Algo deu errado.')}
-          </Text>
-          <View style={styles.modalActions}>
+      <View style={ss.modalBg}>
+        <View style={ss.modalCard}>
+          <Ionicons name={icon} size={30} color={isPerm ? C.red : C.amber} style={{ marginBottom: 14 }} />
+          <Text style={ss.modalTitle}>{isPerm ? 'Microfone bloqueado' : isLimit ? 'Recurso nativo' : 'Aviso'}</Text>
+          <Text style={ss.modalMsg}>{message ?? 'Algo deu errado.'}</Text>
+          <View style={{ gap: 8, width: '100%', marginTop: 20 }}>
             {isBlocked && Platform.OS !== 'web' ? (
-              <TouchableOpacity testID="open-settings-btn" style={styles.modalPrimary} onPress={openSettings} activeOpacity={0.85}>
-                <Ionicons name="settings-outline" size={18} color={C.bg} />
-                <Text style={styles.modalPrimaryTxt}>Abrir configurações</Text>
+              <TouchableOpacity testID="open-settings-btn" style={ss.modalPrimary} onPress={async () => { try { await Linking.openSettings(); } catch {} }} activeOpacity={0.85}>
+                <Text style={ss.modalPrimaryTxt}>Abrir Configurações</Text>
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity testID="retry-mic-btn" style={styles.modalPrimary} onPress={onRetry} activeOpacity={0.85}>
-                <Ionicons name={isPerm ? 'mic' : 'refresh'} size={18} color={C.bg} />
-                <Text style={styles.modalPrimaryTxt}>{isPerm ? 'Permitir microfone' : 'Tentar novamente'}</Text>
+              <TouchableOpacity testID="retry-mic-btn" style={ss.modalPrimary} onPress={onRetry} activeOpacity={0.85}>
+                <Text style={ss.modalPrimaryTxt}>{isPerm ? 'Permitir Microfone' : 'Tentar novamente'}</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity testID="close-modal-btn" style={styles.modalSecondary} onPress={onClose} activeOpacity={0.7}>
-              <Text style={styles.modalSecondaryTxt}>Fechar</Text>
+            <TouchableOpacity testID="close-modal-btn" style={ss.modalSecondary} onPress={onClose}>
+              <Text style={ss.modalSecondaryTxt}>Fechar</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -665,342 +535,177 @@ function MicNoticeModal({
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function degreeLabel(index: number, quality: 'major' | 'minor'): string {
-  const major = ['I', 'ii', 'iii', 'IV', 'V', 'vi'];
-  const minor = ['i', 'ii°', 'III', 'iv', 'v', 'VI'];
-  return (quality === 'major' ? major : minor)[index] ?? '';
+function degreeLabel(i: number, q: 'major' | 'minor') {
+  return (['I','ii','iii','IV','V','vi'] as const)[i] ?? '';
 }
-
-function chordIntlLabel(root: number, quality: 'major' | 'minor' | 'dim'): string {
-  const n = NOTES_INTL[root];
-  if (quality === 'minor') return `${n}m`;
-  if (quality === 'dim') return `${n}°`;
-  return n;
+function chordIntlLabel(root: number, q: 'major' | 'minor' | 'dim') {
+  return NOTES_INTL[root] + (q === 'minor' ? 'm' : q === 'dim' ? '°' : '');
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-const CHORD_GAP = 8;
-const CHORD_WIDTH = (SW - 32 - CHORD_GAP * 2) / 3;
+const MIC_SIZE   = 128;
+const CHORD_GAP  = 8;
+const CHORD_W    = (SW - 32 - CHORD_GAP * 2) / 3;
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: C.bg },
-  splash: { flex: 1, backgroundColor: C.bg, justifyContent: 'center', alignItems: 'center' },
-  splashText: { fontSize: 28, fontWeight: '800', color: C.amber, letterSpacing: -0.5 },
+const ss = StyleSheet.create({
+  safe:      { flex: 1, backgroundColor: C.bg },
+  splash:    { flex: 1, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' },
+  splashTxt: { fontSize: 28, fontFamily: 'Outfit_800ExtraBold', color: C.amber },
 
-  // ── Initial Screen ─────────────────────────────────────────────────────────
-  initialContainer: {
+  // ── InitialScreen ──────────────────────────────────────────────────────────
+  initialRoot: {
     flex: 1,
-    paddingHorizontal: 28,
-    paddingTop: 24,
-    paddingBottom: 32,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: SH * 0.10,
+    paddingBottom: 36,
+    paddingHorizontal: 24,
   },
-  initialHeader: { alignItems: 'center', marginTop: 20 },
-  initialAppName: {
+
+  // Brand
+  brandBlock: { alignItems: 'center', gap: 10 },
+  logoClean: {
+    width: 100,
+    height: 100,
+  },
+  appName: {
     fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 32,
+    fontSize: 36,
     color: C.white,
-    letterSpacing: -0.8,
-    marginTop: 8,
+    letterSpacing: -1,
+    textAlign: 'center',
   },
-  initialTagline: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 13,
-    color: C.text3,
-    marginTop: 4,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-  },
-  // Brand block: logo + nome sempre juntos e centralizados
-  initialBrandBlock: {
-    flex: 1,
+
+  // Mic CTA
+  micSection: {
     alignItems: 'center',
     justifyContent: 'center',
+    width: MIC_SIZE * 3,
+    height: MIC_SIZE * 3,
   },
-  initialLogoArea: {
-    width: 220,
-    height: 220,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  ringOuter: {
+  micRing: {
     position: 'absolute',
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-    opacity: 0.3,
-  },
-  initialWave: {
-    position: 'absolute',
-    width: 128,
-    height: 128,
-    borderRadius: 64,
+    width: MIC_SIZE,
+    height: MIC_SIZE,
+    borderRadius: MIC_SIZE / 2,
     borderWidth: 1.5,
     borderColor: C.amber,
   },
-  ringMid: {
-    position: 'absolute',
-    width: 170,
-    height: 170,
-    borderRadius: 85,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-    opacity: 0.5,
-  },
-  micCircleSimple: {
-    width: 128,
-    height: 128,
-    borderRadius: 64,
-    backgroundColor: C.amberMuted,
-    borderWidth: 1.5,
-    borderColor: C.amberBorder,
-    justifyContent: 'center',
+  micBtn: {
+    width: MIC_SIZE,
+    height: MIC_SIZE,
+    borderRadius: MIC_SIZE / 2,
+    backgroundColor: C.amber,
     alignItems: 'center',
+    justifyContent: 'center',
     ...Platform.select({
-      ios: { shadowColor: C.amber, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.35, shadowRadius: 20 },
-      android: { elevation: 6 },
+      ios:     { shadowColor: C.amber, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 28 },
+      android: { elevation: 10 },
       default: {},
     }),
   },
-  brandLogoLarge: { width: 90, height: 90, marginBottom: 4 },
-  instructions: { alignItems: 'center', paddingHorizontal: 8, marginTop: 8, marginBottom: 24 },
-  instructionsTitle: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 20,
-    color: C.white,
-    letterSpacing: -0.3,
-    marginBottom: 8,
+  micBtnActive: {
+    width: MIC_SIZE,
+    height: MIC_SIZE,
+    borderRadius: MIC_SIZE / 2,
+    backgroundColor: C.amber,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      ios:     { shadowColor: C.amber, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.7, shadowRadius: 32 },
+      android: { elevation: 12 },
+      default: {},
+    }),
   },
-  instructionsBody: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 14,
-    color: C.text2,
-    textAlign: 'center',
-    lineHeight: 22,
-    maxWidth: SW - 80,
+  micLabel: {
+    position: 'absolute',
+    bottom: 12,
+    fontFamily: 'Manrope_500Medium',
+    fontSize: 13,
+    color: C.text3,
+    letterSpacing: 0.5,
   },
+
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     backgroundColor: C.redMuted,
     borderWidth: 1,
-    borderColor: C.redBorder,
+    borderColor: 'rgba(239,68,68,0.25)',
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 16,
+    paddingVertical: 10,
+    width: '100%',
   },
-  errorText: {
+  errorTxt: {
     flex: 1,
     fontFamily: 'Manrope_500Medium',
-    fontSize: 13,
-    color: C.red,
-    lineHeight: 18,
-  },
-  initialBtnArea: { alignItems: 'center' },
-  primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    width: '100%',
-    height: 56,
-    borderRadius: 99,
-    backgroundColor: C.amber,
-    ...Platform.select({
-      ios: { shadowColor: C.amber, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 16 },
-      android: { elevation: 6 },
-      default: {},
-    }),
-  },
-  primaryBtnTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 16,
-    color: C.bg,
-    letterSpacing: 0.2,
-  },
-  hintBelowBtn: {
-    fontFamily: 'Manrope_400Regular',
     fontSize: 12,
-    color: C.text3,
-    marginTop: 14,
-    textAlign: 'center',
+    color: C.red,
+    lineHeight: 16,
   },
+
   logoutBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    alignSelf: 'center',
-    marginTop: 14,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
   },
   logoutTxt: {
     fontFamily: 'Manrope_500Medium',
     fontSize: 11,
     color: C.text3,
-    letterSpacing: 0.3,
+    letterSpacing: 0.4,
   },
 
-  // ── Modal ──────────────────────────────────────────────────────────────────
-  modalBackdrop: {
+  // ── Listening ─────────────────────────────────────────────────────────────
+  listeningRoot: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 28,
-  },
-  modalCard: {
-    backgroundColor: C.surface,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: C.border,
-    padding: 24,
-    width: '100%',
-    maxWidth: 380,
-    alignItems: 'center',
-    ...Platform.select({
-      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 24 },
-      android: { elevation: 12 },
-      default: {},
-    }),
-  },
-  modalIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    marginBottom: 14,
-  },
-  modalTitle: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 20,
-    color: C.white,
-    letterSpacing: -0.3,
-    marginBottom: 6,
-    textAlign: 'center',
-  },
-  modalMsg: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 14,
-    color: C.text2,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 20,
-  },
-  modalActions: { gap: 8, width: '100%' },
-  modalPrimary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 48,
-    borderRadius: 99,
-    backgroundColor: C.amber,
-  },
-  modalPrimaryTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 15,
-    color: C.bg,
-    letterSpacing: 0.3,
-  },
-  modalSecondary: { alignItems: 'center', justifyContent: 'center', height: 40, borderRadius: 99 },
-  modalSecondaryTxt: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 13,
-    color: C.text2,
-    letterSpacing: 0.3,
-  },
-
-  // ── Listening Screen ───────────────────────────────────────────────────────
-  listeningContainer: {
-    flex: 1,
+    justifyContent: 'space-between',
+    paddingTop: 24,
+    paddingBottom: 32,
     paddingHorizontal: 24,
-    paddingTop: 20,
-    paddingBottom: 28,
   },
-  listeningTop: { alignItems: 'center', marginTop: 16 },
+  listeningTop: { alignItems: 'center' },
   listeningLabel: {
     fontFamily: 'Manrope_600SemiBold',
     fontSize: 11,
     color: C.amber,
-    letterSpacing: 3,
-  },
-  listeningStatus: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 22,
-    color: C.white,
-    marginTop: 8,
-    letterSpacing: -0.3,
-    textAlign: 'center',
+    letterSpacing: 4,
   },
   listeningCenter: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 24,
+    width: MIC_SIZE * 3,
+    height: MIC_SIZE * 3,
   },
-  listeningRingsWrap: {
-    width: 180,
-    height: 180,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  listeningRing: {
+  listeningPulse: {
     position: 'absolute',
-    width: 110,
-    height: 110,
-    borderRadius: 55,
+    width: MIC_SIZE,
+    height: MIC_SIZE,
+    borderRadius: MIC_SIZE / 2,
     borderWidth: 1.5,
     borderColor: C.amber,
   },
-  listeningMic: {
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    backgroundColor: C.amberMuted,
-    borderWidth: 1.5,
-    borderColor: C.amberBorder,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  liveNoteBox: {
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    backgroundColor: C.surface,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: C.border,
-    minWidth: 160,
-  },
-  liveNoteLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.text3,
-    letterSpacing: 2.8,
-    marginBottom: 4,
-  },
+  liveNoteWrap: { alignItems: 'center', gap: 2 },
   liveNoteBr: {
     fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 42,
-    color: C.amber,
-    letterSpacing: -1,
-    lineHeight: 46,
+    fontSize: 72,
+    color: C.white,
+    letterSpacing: -2,
+    lineHeight: 76,
+    textAlign: 'center',
   },
   liveNoteIntl: {
     fontFamily: 'Manrope_400Regular',
-    fontSize: 13,
-    color: C.text3,
-    marginTop: 2,
+    fontSize: 14,
+    color: C.text2,
+    letterSpacing: 0.5,
   },
-  listeningBottom: { alignItems: 'center', gap: 14 },
-  softInfoBar: {
+  softBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -1010,9 +715,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    maxWidth: SW - 48,
+    width: '100%',
   },
-  softInfoTxt: {
+  softBarTxt: {
     flex: 1,
     fontFamily: 'Manrope_500Medium',
     fontSize: 12,
@@ -1024,8 +729,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingHorizontal: 26,
-    paddingVertical: 14,
+    height: 48,
+    paddingHorizontal: 32,
     borderRadius: 99,
     backgroundColor: C.redMuted,
     borderWidth: 1.5,
@@ -1038,76 +743,74 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
-  // ── Detected Screen ────────────────────────────────────────────────────────
-  detectedContainer: {
+  // ── Detected ──────────────────────────────────────────────────────────────
+  detectedRoot: {
     flex: 1,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 12,
+    gap: 10,
   },
   detectedHeader: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 2,
-    marginBottom: 10,
-  },
-  headerLogoImg: { width: 40, height: 40, marginBottom: 2 },
-  appName: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 18,
-    color: C.white,
-    letterSpacing: -0.3,
-  },
-  detectedStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginTop: 1,
+    gap: 8,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
   },
-  statusDot: { width: 7, height: 7, borderRadius: 3.5 },
-  detectedStatusTxt: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 11,
-    color: C.text2,
-    letterSpacing: 0.2,
+  headerLogo: { width: 28, height: 28 },
+  headerName: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 15,
+    color: C.white,
     flex: 1,
+    letterSpacing: -0.3,
   },
-  keyCard: {
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  statusTxt: {
+    fontFamily: 'Manrope_500Medium',
+    fontSize: 10,
+    color: C.text2,
+    maxWidth: 120,
+    letterSpacing: 0.2,
+  },
+
+  keyHero: {
     backgroundColor: C.surface,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: C.amberBorder,
-    paddingVertical: 18,
+    paddingVertical: 20,
     paddingHorizontal: 16,
     alignItems: 'center',
-    marginBottom: 10,
   },
-  keyCardLabel: {
+  keyHeroLabel: {
     fontFamily: 'Manrope_600SemiBold',
     fontSize: 10,
     color: C.amber,
-    letterSpacing: 2.8,
+    letterSpacing: 3,
     marginBottom: 8,
   },
-  keyNoteRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
-  mainNoteBr: {
+  keyHeroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  keyHeroNote: {
     fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 64,
+    fontSize: 68,
     color: C.white,
-    lineHeight: 70,
+    lineHeight: 74,
     letterSpacing: -1.5,
-    textShadowColor: C.amberGlow,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 22,
-    textAlign: 'center',
+    ...Platform.select({
+      ios: { textShadowColor: C.amberGlow, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 22 },
+      default: {},
+    }),
   },
-  noteIntlBadge: {
+  keyHeroIntl: {
     fontFamily: 'Manrope_400Regular',
-    fontSize: 15,
+    fontSize: 14,
     color: C.text3,
-    letterSpacing: 0.5,
   },
-  qualityPill: {
+  keyQualityPill: {
     marginTop: 8,
     paddingHorizontal: 18,
     paddingVertical: 5,
@@ -1116,68 +819,57 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.amberBorder,
   },
-  qualityText: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 14,
+  keyQualityTxt: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 12,
     color: C.amber,
-    letterSpacing: 0.3,
+    letterSpacing: 2,
   },
-  currentNoteRow: {
+
+  metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: C.surface,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: C.border,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 10,
-    marginBottom: 8,
   },
-  currentNoteLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.text3,
-    letterSpacing: 2.4,
-  },
-  currentNoteValue: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  currentNoteBr: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 26,
-    color: C.amber,
-    letterSpacing: -0.5,
-    lineHeight: 30,
-  },
-  currentNoteIntl: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 12,
-    color: C.text3,
-  },
-  stabilityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginBottom: 10,
-  },
-  stabilityDot: { width: 6, height: 6, borderRadius: 3 },
-  stabilityTxt: {
+  metaLeft: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  stableIndicator: { width: 7, height: 7, borderRadius: 4 },
+  stableTxt: {
     fontFamily: 'Manrope_500Medium',
     fontSize: 12,
     letterSpacing: 0.3,
   },
-  harmonicSection: { marginBottom: 10 },
+  metaRight: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
+  currentNoteLabel: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 10,
+    color: C.text3,
+    letterSpacing: 2,
+  },
+  currentNoteTxt: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 22,
+    color: C.amber,
+    letterSpacing: -0.5,
+    lineHeight: 26,
+  },
+
   sectionLabel: {
     fontFamily: 'Manrope_600SemiBold',
     fontSize: 10,
     color: C.text3,
-    letterSpacing: 2.6,
-    marginBottom: 6,
+    letterSpacing: 2.8,
+    marginBottom: 8,
     paddingHorizontal: 2,
   },
   chordGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: CHORD_GAP },
   chordCard: {
-    width: CHORD_WIDTH,
+    width: CHORD_W,
     backgroundColor: C.surface,
     borderRadius: 12,
     paddingVertical: 10,
@@ -1191,54 +883,112 @@ const styles = StyleSheet.create({
     fontFamily: 'Manrope_600SemiBold',
     fontSize: 10,
     color: C.text3,
-    letterSpacing: 1.1,
+    letterSpacing: 1,
     marginBottom: 2,
   },
-  chordLabel: {
+  chordName: {
     fontFamily: 'Outfit_700Bold',
-    fontSize: 17,
+    fontSize: 16,
     color: C.white,
     letterSpacing: -0.3,
   },
-  chordLabelTonic: { color: C.amber },
+  chordNameTonic: { color: C.amber },
   chordIntl: {
     fontFamily: 'Manrope_400Regular',
     fontSize: 10,
     color: C.text3,
     marginTop: 1,
-    letterSpacing: 0.3,
   },
-  detectedActions: { gap: 8, marginTop: 'auto' },
-  stopBtnLarge: {
+
+  detectedActions: { flexDirection: 'row', gap: 10 },
+  actionBtnDanger: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    height: 48,
+    gap: 7,
+    height: 46,
     borderRadius: 99,
     backgroundColor: C.redMuted,
     borderWidth: 1.5,
     borderColor: C.red,
   },
-  stopBtnLargeTxt: {
+  actionBtnDangerTxt: {
     fontFamily: 'Outfit_700Bold',
-    fontSize: 15,
+    fontSize: 14,
     color: C.red,
-    letterSpacing: 0.3,
   },
-  resetBtn: {
+  actionBtnGhost: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    height: 40,
+    gap: 7,
+    height: 46,
     borderRadius: 99,
-    backgroundColor: 'transparent',
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
   },
-  resetBtnTxt: {
+  actionBtnGhostTxt: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 13,
+    color: C.text2,
+  },
+
+  // ── Modal ────────────────────────────────────────────────────────────────
+  modalBg: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  modalCard: {
+    backgroundColor: C.surface,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: C.border,
+    padding: 28,
+    width: '100%',
+    alignItems: 'center',
+    ...Platform.select({
+      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.5, shadowRadius: 28 },
+      android: { elevation: 14 },
+      default: {},
+    }),
+  },
+  modalTitle: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 20,
+    color: C.white,
+    marginBottom: 8,
+    letterSpacing: -0.3,
+  },
+  modalMsg: {
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 14,
+    color: C.text2,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  modalPrimary: {
+    height: 48,
+    borderRadius: 99,
+    backgroundColor: C.amber,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalPrimaryTxt: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 15,
+    color: C.bg,
+    letterSpacing: 0.4,
+  },
+  modalSecondary: { height: 40, alignItems: 'center', justifyContent: 'center' },
+  modalSecondaryTxt: {
     fontFamily: 'Manrope_500Medium',
     fontSize: 13,
     color: C.text2,
-    letterSpacing: 0.2,
   },
 });
