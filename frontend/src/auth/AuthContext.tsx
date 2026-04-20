@@ -27,22 +27,25 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const SESSION_KEY = 'tc_session_v1';
 
+// URL de produção: fallback final caso env var não esteja disponível no APK
+const PROD_BACKEND_URL = 'https://tom-certo.preview.emergentagent.com';
+
 function getBackendUrl(): string {
   const url =
     (process.env.EXPO_PUBLIC_BACKEND_URL as string | undefined) ||
     (Constants.expoConfig?.extra as any)?.backendUrl ||
-    '';
+    PROD_BACKEND_URL;
   return (url || '').replace(/\/+$/g, '');
 }
 
 function reasonToMessage(reason?: string | null): string {
   switch (reason) {
     case 'not_found':
-      return 'Token inválido. Verifique o código e tente novamente.';
+      return 'Token inválido. Verifique e tente novamente.';
     case 'revoked':
-      return 'Este token foi revogado. Entre em contato com o suporte.';
+      return 'Token revogado. Entre em contato com o suporte.';
     case 'expired':
-      return 'Este token expirou.';
+      return 'Token expirado. Solicite um novo acesso.';
     case 'device_limit':
       return 'Este token já foi usado no limite máximo de dispositivos.';
     case 'session_expired':
@@ -56,7 +59,9 @@ function reasonToMessage(reason?: string | null): string {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus] = useState<AuthStatus>('loading');
+  // ── Arranca em 'unauthenticated' para EVITAR tela de loading antes do login ──
+  // A revalidação acontece em background e só vira 'authenticated' se houver sessão válida.
+  const [status, setStatus] = useState<AuthStatus>('unauthenticated');
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const boot = useRef(false);
@@ -65,16 +70,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const raw = await storage.getItem(SESSION_KEY);
       if (!raw) {
-        setStatus('unauthenticated');
+        // Sem sessão salva → já está em 'unauthenticated', não precisa mudar
         return;
       }
+
+      // Tem sessão salva → revalida em background
       const parsed: SessionInfo = JSON.parse(raw);
       const deviceId = await getDeviceId();
       const base = getBackendUrl();
-      if (!base) {
-        setStatus('unauthenticated');
-        return;
-      }
 
       const res = await fetch(`${base}/api/auth/revalidate`, {
         method: 'POST',
@@ -96,14 +99,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else {
         await storage.removeItem(SESSION_KEY);
         setSession(null);
-        setStatus('unauthenticated');
+        // Permanece em 'unauthenticated' — ActivationScreen já está visível
         if (data?.reason) {
           setErrorMessage(reasonToMessage(data.reason));
         }
       }
     } catch (err) {
+      // Erro de rede na revalidação: mantém 'unauthenticated' silenciosamente
+      // (Se a internet voltar, próxima abertura do app resolve)
       await storage.removeItem(SESSION_KEY);
-      setStatus('unauthenticated');
     }
   };
 
@@ -120,18 +124,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setErrorMessage('Digite o código do token');
       return { ok: false, reason: 'empty' };
     }
+
     const base = getBackendUrl();
+    // Com o fallback PROD_BACKEND_URL, essa checagem NUNCA vai falhar em produção.
+    // Mantida só por segurança extra.
     if (!base) {
-      setErrorMessage('Servidor não configurado');
+      setErrorMessage('Não foi possível conectar ao servidor. Tente novamente.');
       return { ok: false, reason: 'no_backend' };
     }
+
     try {
       const deviceId = await getDeviceId();
+
+      // Timeout de 15s para evitar travamento em redes ruins
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
       const res = await fetch(`${base}/api/auth/validate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: clean, device_id: deviceId }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
+
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.valid) {
         const msg = reasonToMessage(data?.reason);
@@ -150,8 +166,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setStatus('authenticated');
       return { ok: true };
     } catch (err: any) {
-      setErrorMessage('Erro de conexão. Verifique sua internet.');
-      return { ok: false, reason: 'network' };
+      // Diferenciar timeout/abort vs erro de rede genérico
+      const isAbort = err?.name === 'AbortError';
+      setErrorMessage(
+        isAbort
+          ? 'Tempo esgotado. Verifique sua internet e tente novamente.'
+          : 'Não foi possível conectar ao servidor. Tente novamente.'
+      );
+      return { ok: false, reason: isAbort ? 'timeout' : 'network' };
     }
   };
 

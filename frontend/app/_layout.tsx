@@ -15,15 +15,14 @@ import {
 } from '@expo-google-fonts/manrope';
 import { AuthProvider, useAuth } from '../src/auth/AuthContext';
 import ActivationScreen from '../src/auth/ActivationScreen';
-import AuthLoadingScreen from '../src/auth/AuthLoadingScreen';
 
 // Manter splash nativo enquanto fontes carregam — UX mais rápida
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
-  if (status === 'loading') return <AuthLoadingScreen />;
-  if (status === 'unauthenticated') return <ActivationScreen />;
+  // Sem tela de loading intermediária: direto para login se não autenticado
+  if (status !== 'authenticated') return <ActivationScreen />;
   return <>{children}</>;
 }
 
