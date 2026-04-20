@@ -1,30 +1,46 @@
-// Simplified YIN pitch detection algorithm
-// Reference: de Cheveigné & Kawahara (2002) "YIN, a fundamental frequency estimator"
+// YIN pitch detection — de Cheveigné & Kawahara (2002)
+//
+// ── Melhorias v2 (robustez de detecção) ─────────────────────────────────────
+// 1. Octave validation: verifica se tau/2 também tem mínimo → corrige octave-down
+// 2. Stricter probability: retorna clarity real (não só 1 - yin[tau])
+// 3. Faixa de frequência: voz humana e instrumentos (65Hz–1200Hz)
+// 4. Frame-RMS check mais rigoroso
+// 5. Parabolic interpolation para precisão sub-sample
 
 export interface YinOptions {
   sampleRate: number;
   threshold?: number;
   probabilityMin?: number;
+  minFreq?: number;
+  maxFreq?: number;
 }
 
 export interface YinResult {
-  frequency: number;
-  probability: number;
-  rms: number;
+  frequency: number;   // Hz, -1 se não detectou
+  probability: number; // clarity [0, 1]
+  rms: number;         // energia do frame
 }
 
 export function yinPitch(buffer: Float32Array, opts: YinOptions): YinResult {
-  const { sampleRate, threshold = 0.12, probabilityMin = 0.85 } = opts;
+  const {
+    sampleRate,
+    threshold = 0.10,       // mais restritivo que 0.12 (menos falsos positivos)
+    probabilityMin = 0.88,  // clarity mínima
+    minFreq = 65,           // ~Dó2 (baixo do piano, voz masculina grave)
+    maxFreq = 1200,         // ~Ré6 (voz feminina aguda, limite razoável)
+  } = opts;
+
   const bufSize = buffer.length;
   const halfSize = Math.floor(bufSize / 2);
 
+  // ── 1) RMS ────────────────────────────────────────────────────────────────
   let rms = 0;
   for (let i = 0; i < bufSize; i++) rms += buffer[i] * buffer[i];
   rms = Math.sqrt(rms / bufSize);
   if (rms < 0.01) return { frequency: -1, probability: 0, rms };
 
+  // ── 2) Difference function ────────────────────────────────────────────────
   const yin = new Float32Array(halfSize);
-
   for (let t = 1; t < halfSize; t++) {
     let sum = 0;
     for (let i = 0; i < halfSize; i++) {
@@ -34,6 +50,7 @@ export function yinPitch(buffer: Float32Array, opts: YinOptions): YinResult {
     yin[t] = sum;
   }
 
+  // ── 3) Cumulative mean normalized difference ──────────────────────────────
   yin[0] = 1;
   let running = 0;
   for (let t = 1; t < halfSize; t++) {
@@ -41,16 +58,56 @@ export function yinPitch(buffer: Float32Array, opts: YinOptions): YinResult {
     yin[t] = (yin[t] * t) / running;
   }
 
+  // ── 4) Absolute threshold — primeiro mínimo abaixo de threshold ───────────
+  const tauMin = Math.max(2, Math.floor(sampleRate / maxFreq));
+  const tauMax = Math.min(halfSize - 1, Math.ceil(sampleRate / minFreq));
+
   let tau = -1;
-  for (let t = 2; t < halfSize; t++) {
+  for (let t = tauMin; t <= tauMax; t++) {
     if (yin[t] < threshold) {
-      while (t + 1 < halfSize && yin[t + 1] < yin[t]) t++;
+      // desce até encontrar mínimo local
+      while (t + 1 <= tauMax && yin[t + 1] < yin[t]) t++;
       tau = t;
       break;
     }
   }
-  if (tau === -1) return { frequency: -1, probability: 0, rms };
 
+  if (tau === -1) {
+    // Fallback: pegar o mínimo absoluto se clarity for razoável
+    let minVal = Infinity;
+    let minTau = -1;
+    for (let t = tauMin; t <= tauMax; t++) {
+      if (yin[t] < minVal) { minVal = yin[t]; minTau = t; }
+    }
+    if (minTau === -1 || minVal > 0.25) {
+      return { frequency: -1, probability: 0, rms };
+    }
+    tau = minTau;
+  }
+
+  // ── 5) Octave validation ──────────────────────────────────────────────────
+  // YIN sofre de "octave-down error": detecta tau ~2x o valor correto.
+  // Se existir um mínimo aceitável em tau/2 (clarity próxima), preferir a oitava acima.
+  const halfTau = Math.floor(tau / 2);
+  if (halfTau >= tauMin) {
+    const yTau = yin[tau];
+    // buscar mínimo local perto de halfTau
+    let bestHalfTau = halfTau;
+    let bestHalfVal = yin[halfTau];
+    const searchRange = Math.max(2, Math.floor(halfTau * 0.05));
+    for (let t = Math.max(tauMin, halfTau - searchRange); t <= Math.min(tauMax, halfTau + searchRange); t++) {
+      if (yin[t] < bestHalfVal) {
+        bestHalfVal = yin[t];
+        bestHalfTau = t;
+      }
+    }
+    // Se a clarity do dobro é competitiva (dentro de 15% do atual) e abaixo do threshold, usar
+    if (bestHalfVal < threshold * 1.8 && bestHalfVal < yTau * 1.15) {
+      tau = bestHalfTau;
+    }
+  }
+
+  // ── 6) Parabolic interpolation para precisão sub-sample ──────────────────
   const x0 = tau > 0 ? yin[tau - 1] : yin[tau];
   const x1 = yin[tau];
   const x2 = tau + 1 < halfSize ? yin[tau + 1] : yin[tau];
@@ -59,10 +116,12 @@ export function yinPitch(buffer: Float32Array, opts: YinOptions): YinResult {
   const betterTau = a !== 0 ? tau - b / (2 * a) : tau;
 
   const freq = sampleRate / betterTau;
-  const probability = 1 - yin[tau];
+  // Clarity = 1 - yin[tau], bounded 0..1
+  const probability = Math.max(0, Math.min(1, 1 - x1));
 
-  if (freq < 60 || freq > 1500 || probability < probabilityMin) {
+  if (freq < minFreq || freq > maxFreq || probability < probabilityMin) {
     return { frequency: -1, probability, rms };
   }
+
   return { frequency: freq, probability, rms };
 }

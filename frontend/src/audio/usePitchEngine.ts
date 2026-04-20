@@ -68,8 +68,13 @@ export function usePitchEngine(): PitchEngineHandle {
   // ── FIX 1: Lock para prevenir start() concorrente ─────────────────────────
   const isStartingRef = useRef(false);
 
-  // Buffer acumulador de amostras Float32 para o frame YIN
-  const accumRef = useRef<Float32Array>(new Float32Array(0));
+  // ── Ring buffer de tamanho FIXO para amostras Float32 ─────────────────────
+  // ANTES: alocava new Float32Array() a cada chunk de áudio (100ms) — causava
+  // GC pressure e lag no Android em sessões longas.
+  // AGORA: buffer fixo de capacidade 8192 samples (~512ms @ 16kHz).
+  const RING_CAPACITY = 8192;
+  const ringRef = useRef<Float32Array>(new Float32Array(RING_CAPACITY));
+  const ringLenRef = useRef<number>(0); // quantas amostras válidas estão no buffer
 
   const runYinOnFrame = useCallback((frame: Float32Array, sampleRate: number) => {
     const result = yinPitch(frame, { sampleRate });
@@ -91,20 +96,43 @@ export function usePitchEngine(): PitchEngineHandle {
       const data = event.data;
       if (!(data instanceof Float32Array)) return;
 
-      const prev = accumRef.current;
-      const merged = new Float32Array(prev.length + data.length);
-      merged.set(prev, 0);
-      merged.set(data, prev.length);
+      const ring = ringRef.current;
+      const len = ringLenRef.current;
+      const sr = SAMPLE_RATE;
 
-      let offset = 0;
-      const sr = event.sampleRate || SAMPLE_RATE;
-      while (merged.length - offset >= FRAME_SIZE) {
-        const frame = merged.subarray(offset, offset + FRAME_SIZE);
-        runYinOnFrame(frame, sr);
-        // 50% overlap → atualizações mais suaves e frequentes
-        offset += FRAME_SIZE / 2;
+      // ── Adicionar nova amostra ao ring buffer (sem alocar) ──────────────
+      let newLen = len + data.length;
+      if (newLen > RING_CAPACITY) {
+        // Buffer cheio: descartar amostras antigas (shift esquerda)
+        const keep = RING_CAPACITY - data.length;
+        if (keep > 0) {
+          ring.copyWithin(0, len - keep, len);
+          ring.set(data, keep);
+          newLen = RING_CAPACITY;
+        } else {
+          // chunk maior que o buffer (improvável): manter só os últimos
+          ring.set(data.subarray(data.length - RING_CAPACITY), 0);
+          newLen = RING_CAPACITY;
+        }
+      } else {
+        ring.set(data, len);
       }
-      accumRef.current = merged.slice(offset);
+
+      // ── Processar frames YIN com overlap 50% ────────────────────────────
+      let offset = 0;
+      while (newLen - offset >= FRAME_SIZE) {
+        // subarray NÃO aloca — é só uma view do ring buffer
+        const frame = ring.subarray(offset, offset + FRAME_SIZE);
+        runYinOnFrame(frame, sr);
+        offset += FRAME_SIZE / 2; // 50% overlap
+      }
+
+      // ── Shift buffer para manter apenas amostras pendentes ──────────────
+      const remaining = newLen - offset;
+      if (remaining > 0 && offset > 0) {
+        ring.copyWithin(0, offset, newLen);
+      }
+      ringLenRef.current = remaining;
     },
     [runYinOnFrame]
   );
@@ -119,7 +147,7 @@ export function usePitchEngine(): PitchEngineHandle {
     }
 
     activeRef.current = false;
-    accumRef.current = new Float32Array(0);
+    ringLenRef.current = 0;
 
     try {
       await recorder.stopRecording();
@@ -160,7 +188,7 @@ export function usePitchEngine(): PitchEngineHandle {
 
       onPitchRef.current = onPitch;
       onErrorRef.current = onError;
-      accumRef.current = new Float32Array(0);
+      ringLenRef.current = 0;
 
       // ── Verificação de permissão com logs detalhados ──────────────────────
       console.log('[AudioEngine][START-2] Verificando permissão do microfone...');

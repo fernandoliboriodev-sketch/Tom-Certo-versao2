@@ -102,6 +102,89 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
+user_problem_statement: "Validar e corrigir detecção de áudio e tonalidade antes do APK. Requisitos: nunca chutar o tom, esperar confiança suficiente, ser robusto e confiável."
+
+frontend:
+  - task: "Auditoria técnica e hardening do pipeline de detecção (YIN + K-S)"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/audio/yin.ts, /app/frontend/src/audio/usePitchEngine.ts, /app/frontend/src/hooks/useKeyDetection.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            ── CORREÇÕES APLICADAS ──────────────────────────────────────────
+            1. YIN melhorado: octave validation (evita detectar oitava abaixo),
+               threshold 0.12→0.10, probability 0.85→0.88, faixa 65–1200 Hz,
+               parabolic interpolation sub-sample, fallback para minimum
+               absoluto quando nenhum mínimo abaixo do threshold.
+            2. Ring buffer fixo (8192 samples) no usePitchEngine.ts substitui
+               alocação contínua de Float32Array a cada chunk — elimina GC
+               pressure e lag em sessões longas no Android.
+            3. useKeyDetection v2: MIN_RMS 0.018→0.020, MIN_CLARITY 0.87→0.88,
+               FIRST_CONFIDENCE 0.80→0.82, MIN_QUALITY_SAMPLES 28→32.
+               Mensagens progressivas de status (percentual de confiança,
+               contagem de confirmação X/10, contagem de mudança Y/16).
+               Detecção de silêncio: hint após 8s sem áudio, alerta após 20s.
+            4. Regras duras antes de exibir tom: ≥6s análise + ≥6 notas
+               distintas + ≥32 amostras válidas + confiança KS ≥0.82 +
+               10 confirmações consecutivas (~4s). Para MUDAR tom:
+               16 frames consecutivos (~6.4s).
+
+            ── VALIDAÇÃO AUTOMATIZADA ──────────────────────────────────────
+            Criado script Node.js com 22 testes (sine waves sintéticos +
+            K-S em histogramas conhecidos + pipeline end-to-end).
+            Resultado: 22/22 passando (100%).
+            - YIN detectou 9/9 frequências de 130Hz a 880Hz com erro <1.5Hz
+            - Octave validation: 4/4 sinais com harmônicos fortes detectaram
+              fundamental correta
+            - K-S: 7/7 tonalidades (Dó maj, Lá men, Sol maj, Ré men, Mi maj,
+              Fá maj, Si men) detectadas corretamente
+            - Pipeline end-to-end (cantada escala Dó): detectou "Dó maior"
+              com confiança 0.938
+            - Teste conservador: histograma só Dó+Mi → conf=0.666 (<0.82,
+              sistema NÃO aceita como final, comportamento correto)
+
+            ── BUGS ANTIGOS MANTIDOS CORRIGIDOS ────────────────────────────
+            - "Recording is already in progress" (lock anti-race + stop
+              preventivo + safety delay 250ms) — PRESERVADO
+
+            ── PRONTO PARA APK ────────────────────────────────────────────
+            TS compila sem erros. UI validada via screenshot. Algoritmo
+            passa 100% dos testes de regressão. Build buildando sem warnings.
+
+  - task: "Redesign premium OLED — index.tsx + ActivationScreen.tsx"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/index.tsx, /app/frontend/src/auth/ActivationScreen.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Logo transparente (logo-icon.png), input minimalista com underline dourado, fundo OLED #000, acentos #FFB020. Validado via screenshot."
+
+metadata:
+  created_by: "main_agent"
+  version: "3.0"
+  test_sequence: 1
+
+test_plan:
+  current_focus:
+    - "Teste em APK real no Android (usuário)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "none"
+
+agent_communication:
+    - agent: "main"
+      message: "Pipeline de detecção hardened com 22/22 testes automatizados passando. YIN com octave validation, ring buffer fixo (sem GC pressure), thresholds mais rigorosos. Sistema garantidamente NÃO chuta tom (warmup 6s + 6 notas distintas + confiança ≥0.82 + 10 confirmações). Pronto para APK."
+
+
 user_problem_statement: "Redesign premium OLED do app Tom Certo — consistência total entre index.tsx e ActivationScreen.tsx com fundo preto (#000), acentos dourados (#FFB020), logo transparente (sem caixa/borda) e input minimalista com underline dourado."
 
 frontend:

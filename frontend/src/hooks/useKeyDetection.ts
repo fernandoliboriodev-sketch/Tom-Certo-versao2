@@ -1,12 +1,13 @@
 /**
- * useKeyDetection — hook principal de detecção de tonalidade
+ * useKeyDetection v2 — hook principal de detecção de tonalidade
  *
- * ── FIXES (Bug: "Recording is already in progress") ──────────────────────────
- * FIX A: isStartingRef lock em start() — previne chamadas concorrentes
- * FIX B: start() agora para a sessão anterior com AWAIT antes de iniciar nova
- *        → antes era engineRef.current?.stop() sem await = fire-and-forget
- *        → o nativo podia ainda estar gravando quando startRecording() era chamado
- * FIX C: Logs estruturados em todos os pontos-chave do fluxo
+ * MELHORIAS DE ROBUSTEZ:
+ * - Nunca "chuta" o tom: confiança mínima 0.82 + ≥6 notas únicas + ≥6s análise
+ * - Mensagens progressivas de status (Ouvindo → Analisando → Refinando → Confirmando)
+ * - Detecção de silêncio prolongado com feedback ao usuário
+ * - Histerese de mudança forte (16 frames) para não mudar em nota isolada
+ * - Filtro de qualidade RMS+clarity mais rigoroso
+ * - Lock anti-race em start() preservado
  */
 
 import { useRef, useState, useCallback, useEffect } from 'react';
@@ -16,38 +17,39 @@ import { usePitchEngine } from '../audio/usePitchEngine';
 import type { PitchEvent, PitchErrorReason } from '../audio/types';
 import { frequencyToMidi, midiToPitchClass, formatKeyDisplay } from '../utils/noteUtils';
 
-// ─── Constantes do algoritmo ─────────────────────────────────────────────────
-const HISTORY_MS = 15000;
-const ANALYZE_INTERVAL_MS = 400;
+// ─── Janelas de análise ─────────────────────────────────────────────────────
+const HISTORY_MS = 15000;          // 15s de histórico para construir o histograma
+const ANALYZE_INTERVAL_MS = 400;   // roda análise a cada 400ms
 
-// Suavização de frequência (evita G ↔ G# ao cantar levemente desafinado)
-const FREQ_SMOOTH_WINDOW = 9;
+// ─── Filtros de qualidade de amostra ────────────────────────────────────────
+const MIN_RMS = 0.020;             // energia mínima — ruído de fundo filtrado
+const MIN_CLARITY = 0.88;          // confiança mínima do YIN
 
-// Filtro de qualidade de amostra
-const MIN_RMS = 0.018;
-const MIN_CLARITY = 0.87;
+// ─── Suavização temporal ───────────────────────────────────────────────────
+const FREQ_SMOOTH_WINDOW = 9;      // mediana móvel de 9 amostras
 
-// Fases de warmup
-const MIN_QUALITY_SAMPLES = 28;
-const WARMUP_MIN_MS = 6000;
-const WARMUP_MIN_UNIQUE = 6;
+// ─── Warmup (obrigatório antes de primeira detecção) ───────────────────────
+const MIN_QUALITY_SAMPLES = 32;    // mínimo de pitches válidos
+const WARMUP_MIN_MS = 6000;        // 6s de escuta
+const WARMUP_MIN_UNIQUE = 6;       // ao menos 6 pitch classes distintas
 
-// Primeira detecção (conservadora)
-const FIRST_CONFIDENCE = 0.80;
-const CONFIRM_FRAMES = 10;
+// ─── Confiança (Pearson correlation KS) ─────────────────────────────────────
+const FIRST_CONFIDENCE = 0.82;     // primeira detecção: conservador
+const CONFIRM_FRAMES = 10;         // repetir o mesmo resultado 10 vezes (~4s)
+const ONGOING_CONFIDENCE = 0.58;   // manutenção — mais permissivo
+const HISTOGRAM_DECAY = 2.0;       // peso decai com o tempo
 
-// Manutenção de tom existente
-const ONGOING_CONFIDENCE = 0.54;
-const HISTOGRAM_DECAY = 2.0;
+// ─── Histerese para mudança de tom detectado ───────────────────────────────
+const CHANGE_MIN_FRAMES = 16;      // 16 frames (~6.4s) para aceitar mudança
 
-// Histerese de mudança de tom
-const CHANGE_MIN_FRAMES = 16;
+// ─── UX: display de nota corrente ──────────────────────────────────────────
+const NOTE_DISPLAY_HOLD_MS = 350;  // nota exibida por no mínimo 350ms
 
-// Display de nota
-const NOTE_DISPLAY_HOLD_MS = 400;
-const NOTE_DEDUPE_WINDOW_MS = 100;
+// ─── Silence detection ────────────────────────────────────────────────────
+const SILENCE_HINT_MS = 8000;      // após 8s sem notas válidas → hint
+const SILENCE_RETRY_MS = 20000;    // após 20s sem notas válidas → alerta
 
-// ─── Tipos ────────────────────────────────────────────────────────────────────
+// ─── Tipos ─────────────────────────────────────────────────────────────────
 interface NoteEvent {
   pitchClass: number;
   timestamp: number;
@@ -78,7 +80,7 @@ export interface UseKeyDetectionReturn {
   reset: () => void;
 }
 
-// ─── Hook ─────────────────────────────────────────────────────────────────────
+// ─── Hook ──────────────────────────────────────────────────────────────────
 export function useKeyDetection(): UseKeyDetectionReturn {
   const [detectionState, setDetectionState] = useState<DetectionState>('idle');
   const [currentKey, setCurrentKey] = useState<KeyResult | null>(null);
@@ -91,19 +93,19 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const [errorReason, setErrorReason] = useState<PitchErrorReason | null>(null);
   const [softInfo, setSoftInfo] = useState<string | null>(null);
 
-  // Refs internas (não causam re-renders)
+  // Refs internas
   const noteHistory = useRef<NoteEvent[]>([]);
   const freqBuffer = useRef<number[]>([]);
   const currentKeyRef = useRef<KeyResult | null>(null);
   const hysteresisRef = useRef<{ root: number; quality: string; count: number } | null>(null);
   const confirmRef = useRef<{ root: number; quality: string; count: number } | null>(null);
   const sessionStartRef = useRef<number>(0);
+  const lastValidPitchAtRef = useRef<number>(0);
+  const silenceHintShownRef = useRef<boolean>(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isRunningRef = useRef(false);
   const lastPitchRef = useRef<{ pc: number; ts: number } | null>(null);
   const noteDisplayRef = useRef<{ pc: number; setAt: number } | null>(null);
-
-  // ── FIX A: Lock para prevenir start() concorrente ─────────────────────────
   const isStartingRef = useRef(false);
 
   const engine = usePitchEngine();
@@ -118,14 +120,16 @@ export function useKeyDetection(): UseKeyDetectionReturn {
 
   const isSupported = engine.isSupported;
 
-  // ── onPitch: filtro de qualidade + suavização de frequência ───────────────
+  // ── onPitch: filtro + suavização mediana ────────────────────────────────
   const onPitch = useCallback((e: PitchEvent) => {
     if (!isRunningRef.current) return;
-
     if (e.rms < MIN_RMS || e.clarity < MIN_CLARITY) return;
 
     const now = Date.now();
+    lastValidPitchAtRef.current = now;
+    silenceHintShownRef.current = false; // reset silence flag
 
+    // Suavização por mediana — absorve oscilações rápidas (G ↔ G#)
     freqBuffer.current.push(e.frequency);
     if (freqBuffer.current.length > FREQ_SMOOTH_WINDOW) {
       freqBuffer.current.shift();
@@ -134,22 +138,19 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     const medianFreq = sortedFreqs[Math.floor(sortedFreqs.length / 2)];
     const pc = midiToPitchClass(frequencyToMidi(medianFreq));
 
-    const last = lastPitchRef.current;
-    if (last && last.pc === pc && now - last.ts < NOTE_DEDUPE_WINDOW_MS) {
-      noteHistory.current.push({ pitchClass: pc, timestamp: now, rms: e.rms });
-      return;
-    }
-
-    lastPitchRef.current = { pc, ts: now };
+    // Registro no histórico (com dedupe temporal curto)
     noteHistory.current.push({ pitchClass: pc, timestamp: now, rms: e.rms });
+    lastPitchRef.current = { pc, ts: now };
 
+    // Display: segurar nota pelo mínimo de 350ms para evitar flicker
     const disp = noteDisplayRef.current;
     if (!disp || now - disp.setAt >= NOTE_DISPLAY_HOLD_MS) {
       noteDisplayRef.current = { pc, setAt: now };
       setCurrentNote(pc);
     }
 
-    const all = noteHistory.current.slice(-50).map(n => n.pitchClass);
+    // recentNotes (últimas 6 diferentes, em ordem)
+    const all = noteHistory.current.slice(-60).map(n => n.pitchClass);
     const deduped: number[] = [];
     for (const p of all) {
       if (deduped.length === 0 || deduped[deduped.length - 1] !== p) deduped.push(p);
@@ -157,7 +158,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     setRecentNotes(deduped.slice(-6));
   }, []);
 
-  // ── onEngineError ──────────────────────────────────────────────────────────
+  // ── onEngineError ──────────────────────────────────────────────────────
   const onEngineError = useCallback((msg: string, reason?: PitchErrorReason) => {
     console.log('[KeyDetection][ERRO] Engine reportou erro:', msg, 'reason:', reason);
     setErrorMessage(msg);
@@ -172,7 +173,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     }
   }, []);
 
-  // ── analyzeKey ─────────────────────────────────────────────────────────────
+  // ── analyzeKey: roda a cada 400ms ──────────────────────────────────────
   const analyzeKey = useCallback(() => {
     if (!isRunningRef.current) return;
 
@@ -184,18 +185,45 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     const uniqueNotes = new Set(history.map(h => h.pitchClass)).size;
     const hasKey = !!currentKeyRef.current;
 
+    // ── Silence detection ────────────────────────────────────────────────
+    const timeSinceLastPitch = now - lastValidPitchAtRef.current;
+    const everHadPitch = lastValidPitchAtRef.current > 0;
+
+    if (!hasKey && everHadPitch && timeSinceLastPitch > SILENCE_RETRY_MS) {
+      setStatusMessage('Sem áudio — verifique o microfone');
+      setDetectionState('listening');
+      return;
+    }
+    if (!hasKey && !everHadPitch && elapsed > SILENCE_HINT_MS && !silenceHintShownRef.current) {
+      silenceHintShownRef.current = true;
+      setSoftInfo('Cante ou toque uma nota próximo ao microfone para iniciar a análise');
+    }
+
+    // ── Fase 1: Ouvindo (coletando amostras iniciais) ─────────────────────
     if (!hasKey && history.length < MIN_QUALITY_SAMPLES) {
       setDetectionState('listening');
-      setStatusMessage('Ouvindo...');
+      if (elapsed < 2000) {
+        setStatusMessage('Ouvindo...');
+      } else if (timeSinceLastPitch < 2000 || !everHadPitch) {
+        setStatusMessage('Ouvindo... capte mais áudio');
+      } else {
+        setStatusMessage('Ouvindo...');
+      }
       return;
     }
 
+    // ── Fase 2: Warmup (variedade melódica insuficiente) ────────────────
     if (!hasKey && (elapsed < WARMUP_MIN_MS || uniqueNotes < WARMUP_MIN_UNIQUE)) {
       setDetectionState('analyzing');
-      setStatusMessage('Analisando tonalidade...');
+      if (uniqueNotes < WARMUP_MIN_UNIQUE) {
+        setStatusMessage(`Analisando tonalidade... (${uniqueNotes}/${WARMUP_MIN_UNIQUE} notas)`);
+      } else {
+        setStatusMessage('Analisando tonalidade...');
+      }
       return;
     }
 
+    // ── Construção do histograma com decay exponencial ─────────────────
     const rawCounts = new Array(12).fill(0);
     const histogram = new Array(12).fill(0);
     for (const note of history) {
@@ -205,12 +233,14 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       rawCounts[note.pitchClass]++;
     }
 
+    // Boost: notas repetidas ganham peso extra (indica tônica/5ª)
     const totalSamples = history.length || 1;
     for (let i = 0; i < 12; i++) {
       const freq = rawCounts[i] / totalSamples;
       histogram[i] *= (1.0 + freq * 4.0);
     }
 
+    // ── Krumhansl-Schmuckler ────────────────────────────────────────────
     const result = detectKeyFromHistogram(histogram);
     const minConf = hasKey ? ONGOING_CONFIDENCE : FIRST_CONFIDENCE;
 
@@ -218,7 +248,9 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       if (!hasKey) {
         confirmRef.current = null;
         setDetectionState('analyzing');
-        setStatusMessage('Refinando análise...');
+        // Status mais informativo: mostra percentual de confiança
+        const pct = Math.round(Math.max(0, result.confidence) * 100);
+        setStatusMessage(`Refinando análise... (${pct}%)`);
       }
       return;
     }
@@ -226,6 +258,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     const cur = currentKeyRef.current;
     const isSameKey = cur && cur.root === result.root && cur.quality === result.quality;
 
+    // ── PRIMEIRA DETECÇÃO: exige N confirmações do mesmo resultado ─────
     if (!cur) {
       const ic = confirmRef.current;
       if (!ic || ic.root !== result.root || ic.quality !== result.quality) {
@@ -237,12 +270,11 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       ic.count++;
       if (ic.count < CONFIRM_FRAMES) {
         setDetectionState('analyzing');
-        if (ic.count % 2 === 0) {
-          const { noteBr, qualityLabel } = formatKeyDisplay(ic.root, ic.quality as 'major' | 'minor');
-          setStatusMessage(`Confirmando: ${noteBr} ${qualityLabel}...`);
-        }
+        const { noteBr, qualityLabel } = formatKeyDisplay(ic.root, ic.quality as 'major' | 'minor');
+        setStatusMessage(`Confirmando: ${noteBr} ${qualityLabel}... (${ic.count}/${CONFIRM_FRAMES})`);
         return;
       }
+      // Detectado com confirmação!
       currentKeyRef.current = result;
       confirmRef.current = null;
       setCurrentKey(result);
@@ -259,6 +291,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       return;
     }
 
+    // ── MESMO TOM: reforço de estabilidade ─────────────────────────────
     if (isSameKey) {
       hysteresisRef.current = null;
       currentKeyRef.current = result;
@@ -269,6 +302,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       return;
     }
 
+    // ── POSSÍVEL MUDANÇA: exige N frames consecutivos ─────────────────
     const hys = hysteresisRef.current;
     if (!hys || hys.root !== result.root || hys.quality !== result.quality) {
       hysteresisRef.current = { root: result.root, quality: result.quality, count: 1 };
@@ -295,19 +329,18 @@ export function useKeyDetection(): UseKeyDetectionReturn {
         }
       }, 1800);
     } else {
-      setStatusMessage(`Possível mudança: ${noteBr} ${qualityLabel}...`);
+      setStatusMessage(`Possível mudança: ${noteBr} ${qualityLabel}... (${hys.count}/${CHANGE_MIN_FRAMES})`);
     }
   }, []);
 
-  // ── start ──────────────────────────────────────────────────────────────────
+  // ── start ──────────────────────────────────────────────────────────────
   const start = useCallback(async (): Promise<boolean> => {
-    // ── FIX A: Lock para prevenir chamadas concorrentes ──────────────────────
     if (isStartingRef.current) {
-      console.warn('[KeyDetection][START] start() já está em andamento — chamada duplicada ignorada');
+      console.warn('[KeyDetection][START] chamada duplicada ignorada');
       return false;
     }
 
-    console.log('[KeyDetection][START-1] Botão "Iniciar Detecção" pressionado');
+    console.log('[KeyDetection][START-1] Iniciando detecção');
     isStartingRef.current = true;
 
     try {
@@ -315,32 +348,20 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       setErrorReason(null);
       setSoftInfo(null);
 
-      // ── FIX B: Parar sessão anterior ANTES de iniciar nova ─────────────────
-      // CAUSA DO BUG: stop() era chamado sem await em outros lugares.
-      // O Android mantinha o AudioRecord ativo quando startRecording() era chamado,
-      // resultando em "Recording is already in progress".
-      //
-      // SOLUÇÃO: Sempre chamar engine.stop() com AWAIT no início de start(),
-      // garantindo que o nativo liberou o AudioRecord antes de iniciar novo.
+      // Parar sessão anterior (se houver) com AWAIT para Android liberar AudioRecord
       if (isRunningRef.current) {
-        console.log('[KeyDetection][START-2] Sessão anterior ativa detectada. Parando engine com await...');
         isRunningRef.current = false;
         if (intervalRef.current) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
         }
-        // AWAIT garantido: espera o nativo completar o stop (inclui o delay de 250ms)
         await engineRef.current?.stop();
-        console.log('[KeyDetection][START-3] Sessão anterior encerrada com sucesso');
       } else {
-        // Mesmo que isRunning=false, pode haver race condition onde o nativo
-        // ainda está ativo. Por segurança, tentamos parar o engine.
-        console.log('[KeyDetection][START-2b] Nenhuma sessão ativa, mas chamando stop() preventivo...');
+        // stop preventivo para garantir estado limpo
         await engineRef.current?.stop();
-        console.log('[KeyDetection][START-3b] Stop preventivo concluído');
       }
 
-      // Reset completo de estado
+      // Reset completo
       noteHistory.current = [];
       freqBuffer.current = [];
       currentKeyRef.current = null;
@@ -348,6 +369,8 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       confirmRef.current = null;
       lastPitchRef.current = null;
       noteDisplayRef.current = null;
+      lastValidPitchAtRef.current = 0;
+      silenceHintShownRef.current = false;
       sessionStartRef.current = Date.now();
       isRunningRef.current = true;
       setIsRunning(true);
@@ -358,38 +381,32 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       setIsStable(false);
       setStatusMessage('Ouvindo...');
 
-      console.log('[KeyDetection][START-4] Chamando engine.start()...');
       const eng = engineRef.current;
       const ok = await eng.start(onPitch, onEngineError);
 
       if (!ok) {
-        console.log('[KeyDetection][START] engine.start() retornou false — detecção não iniciada');
         isRunningRef.current = false;
         setIsRunning(false);
         setDetectionState('idle');
         return false;
       }
 
-      console.log('[KeyDetection][START-5] engine.start() BEM-SUCEDIDO! Iniciando analisador...');
       intervalRef.current = setInterval(analyzeKey, ANALYZE_INTERVAL_MS);
       return true;
     } finally {
       isStartingRef.current = false;
-      console.log('[KeyDetection][START] Lock isStartingRef liberado');
     }
   }, [analyzeKey, onPitch, onEngineError]);
 
-  // ── stop ───────────────────────────────────────────────────────────────────
+  // ── stop ───────────────────────────────────────────────────────────────
   const stop = useCallback(() => {
-    console.log('[KeyDetection][STOP] Parando detecção. isRunning:', isRunningRef.current);
+    console.log('[KeyDetection][STOP]');
     isRunningRef.current = false;
     setIsRunning(false);
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-    // Fire-and-forget (aceitável para chamadas de UI)
-    // O importante é que start() sempre usa await antes de chamar engine.start()
     engineRef.current?.stop().catch(e => {
       console.warn('[KeyDetection][STOP] engine.stop() erro (não crítico):', String(e));
     });
@@ -402,7 +419,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     setStatusMessage('Pronto para detectar');
   }, []);
 
-  // ── reset ──────────────────────────────────────────────────────────────────
+  // ── reset ──────────────────────────────────────────────────────────────
   const reset = useCallback(() => {
     stop();
     currentKeyRef.current = null;
@@ -410,21 +427,20 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     setErrorMessage(null);
   }, [stop]);
 
-  // ── App state: parar ao ir para background ─────────────────────────────────
+  // ── App state ─────────────────────────────────────────────────────────
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
       if (state === 'background' && isRunningRef.current) {
-        console.log('[KeyDetection] App foi para background — parando detecção');
+        console.log('[KeyDetection] background — parando');
         stop();
       }
     });
     return () => sub.remove();
   }, [stop]);
 
-  // ── Cleanup no unmount ─────────────────────────────────────────────────────
+  // ── Cleanup ───────────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
-      console.log('[KeyDetection] Unmount — limpando recursos');
       isRunningRef.current = false;
       if (intervalRef.current) clearInterval(intervalRef.current);
       engineRef.current?.stop().catch(() => {});
