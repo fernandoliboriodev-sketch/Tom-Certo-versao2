@@ -10,12 +10,13 @@ import {
   Platform,
   Image,
   Modal,
+  ScrollView,
   Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
-import { useKeyDetection } from '../src/hooks/useKeyDetection';
+import { useKeyDetection, DetectionMode } from '../src/hooks/useKeyDetection';
 import {
   NOTES_BR,
   NOTES_INTL,
@@ -29,11 +30,12 @@ const { width: SW, height: SH } = Dimensions.get('window');
 // ─── Design tokens (premium dark) ────────────────────────────────────────────
 const C = {
   bg:           '#000000',
-  surface:      '#111111',
-  surface2:     '#181818',
-  border:       '#1E1E1E',
+  surface:      '#0E0E0E',
+  surface2:     '#141414',
+  border:       '#1C1C1C',
+  borderStrong: '#2A2A2A',
   amber:        '#FFB020',
-  amberGlow:    'rgba(255,176,32,0.40)',
+  amberGlow:    'rgba(255,176,32,0.38)',
   amberMuted:   'rgba(255,176,32,0.10)',
   amberBorder:  'rgba(255,176,32,0.28)',
   white:        '#FFFFFF',
@@ -42,74 +44,34 @@ const C = {
   red:          '#EF4444',
   redMuted:     'rgba(239,68,68,0.12)',
   green:        '#22C55E',
+  blue:         '#60A5FA',
 };
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ROOT
+// ═════════════════════════════════════════════════════════════════════════════
 export default function HomeScreen() {
-  const {
-    currentKey,
-    keyTier,
-    liveConfidence,
-    changeSuggestion,
-    currentNote,
-    recentNotes,
-    isStable,
-    statusMessage,
-    isRunning,
-    errorMessage,
-    errorReason,
-    softInfo,
-    start,
-    stop,
-    reset,
-  } = useKeyDetection();
+  const det = useKeyDetection();
 
-  // Nova regra: só vai para DetectedScreen quando o tom está CONFIRMADO.
-  // Enquanto está em fase provisional, o usuário continua vendo o ListeningScreen
-  // (com preview "Tom provável" embutido) — evita saltos bruscos de UI.
-  const screen: 'initial' | 'listening' | 'detected' =
-    keyTier === 'confirmed' && currentKey
-      ? 'detected'
-      : isRunning
-      ? 'listening'
-      : 'initial';
+  const screen: 'initial' | 'active' = det.isRunning ? 'active' : 'initial';
 
   return (
     <SafeAreaView style={ss.safe} edges={['top', 'bottom']}>
-      {screen === 'initial' && (
-        <InitialScreen onStart={start} errorMessage={errorMessage} errorReason={errorReason} />
-      )}
-      {screen === 'listening' && (
-        <ListeningScreen
-          onStop={stop}
-          statusMessage={statusMessage}
-          currentNote={currentNote}
-          recentNotes={recentNotes}
-          provisionalKey={currentKey}
-          liveConfidence={liveConfidence}
-          softInfo={softInfo}
+      {screen === 'initial' ? (
+        <InitialScreen
+          onStart={det.start}
+          errorMessage={det.errorMessage}
+          errorReason={det.errorReason}
         />
-      )}
-      {screen === 'detected' && (
-        <DetectedScreen
-          currentKey={currentKey!}
-          keyTier={keyTier}
-          liveConfidence={liveConfidence}
-          changeSuggestion={changeSuggestion}
-          currentNote={currentNote}
-          isStable={isStable}
-          isRunning={isRunning}
-          statusMessage={statusMessage}
-          onStop={stop}
-          onReset={reset}
-          onResume={start}
-        />
+      ) : (
+        <ActiveScreen det={det} />
       )}
     </SafeAreaView>
   );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SCREEN 1 — Initial (Shazam style)
+// INITIAL
 // ═════════════════════════════════════════════════════════════════════════════
 function InitialScreen({
   onStart,
@@ -129,29 +91,20 @@ function InitialScreen({
     prevErr.current = errorMessage;
   }, [errorMessage]);
 
-  // Entrance animations
   const fadeIn  = useRef(new Animated.Value(0)).current;
   const slideUp = useRef(new Animated.Value(30)).current;
-
-  // Logo glow pulse
   const logoGlow = useRef(new Animated.Value(0.6)).current;
-
-  // Mic rings — 3 waves expanding outward
   const ring1 = useRef(new Animated.Value(0)).current;
   const ring2 = useRef(new Animated.Value(0)).current;
   const ring3 = useRef(new Animated.Value(0)).current;
-
-  // Mic button scale on press
   const micScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    // Entrance
     Animated.parallel([
       Animated.timing(fadeIn,  { toValue: 1, duration: 700, useNativeDriver: true }),
       Animated.timing(slideUp, { toValue: 0, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
     ]).start();
 
-    // Logo subtle breath
     const logoLoop = Animated.loop(
       Animated.sequence([
         Animated.timing(logoGlow, { toValue: 1,   duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
@@ -160,7 +113,6 @@ function InitialScreen({
     );
     logoLoop.start();
 
-    // Sonar rings — staggered
     const makeRing = (val: Animated.Value, delay: number) =>
       Animated.loop(
         Animated.sequence([
@@ -195,8 +147,6 @@ function InitialScreen({
 
   return (
     <Animated.View style={[ss.initialRoot, { opacity: fadeIn, transform: [{ translateY: slideUp }] }]}>
-
-      {/* ── BRAND BLOCK: Logo oficial (com texto integrado) ── */}
       <View style={ss.brandBlock}>
         <Animated.Image
           source={require('../assets/images/logo-full.png')}
@@ -205,7 +155,6 @@ function InitialScreen({
         />
       </View>
 
-      {/* ── MIC SECTION: Shazam-style CTA ── */}
       <View style={ss.micSection}>
         {renderRing(ring3)}
         {renderRing(ring2)}
@@ -227,7 +176,6 @@ function InitialScreen({
         <Text style={ss.micLabel}>Toque para detectar</Text>
       </View>
 
-      {/* Error box */}
       {errorMessage && !modalVisible ? (
         <TouchableOpacity testID="error-details-btn" style={ss.errorBox} onPress={() => setModalVisible(true)} activeOpacity={0.7}>
           <Ionicons name="alert-circle" size={16} color={C.red} />
@@ -235,7 +183,6 @@ function InitialScreen({
         </TouchableOpacity>
       ) : null}
 
-      {/* ── BOTTOM: Logout ── */}
       <TouchableOpacity testID="logout-btn" style={ss.logoutBtn} onPress={logout} activeOpacity={0.6}>
         <Ionicons name="log-out-outline" size={13} color={C.text3} />
         <Text style={ss.logoutTxt}>
@@ -255,367 +202,313 @@ function InitialScreen({
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SCREEN 2 — Listening
+// ACTIVE — TELA ÚNICA UNIFICADA (todas as camadas simultâneas)
 // ═════════════════════════════════════════════════════════════════════════════
-function ListeningScreen({
-  onStop,
-  statusMessage,
-  currentNote,
-  recentNotes,
-  provisionalKey,
-  liveConfidence,
-  softInfo,
-}: {
-  onStop: () => void;
-  statusMessage: string;
-  currentNote: number | null;
-  recentNotes: number[];
-  provisionalKey: ReturnType<typeof useKeyDetection>['currentKey'];
-  liveConfidence: number;
-  softInfo: string | null;
-}) {
-  const pulse1 = useRef(new Animated.Value(0)).current;
-  const pulse2 = useRef(new Animated.Value(0)).current;
-  const pulse3 = useRef(new Animated.Value(0)).current;
-  const noteOpacity = useRef(new Animated.Value(0)).current;
-  const provOpacity = useRef(new Animated.Value(0)).current;
+function ActiveScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
+  const {
+    detectionState,
+    currentKey,
+    keyTier,
+    liveConfidence,
+    changeSuggestion,
+    currentNote,
+    recentNotes,
+    isStable,
+    isRunning,
+    statusMessage,
+    softInfo,
+    mode,
+    setMode,
+    start,
+    stop,
+    reset,
+  } = det;
 
-  useEffect(() => {
-    const mkPulse = (v: Animated.Value, delay: number) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(v, { toValue: 1, duration: 1400, easing: Easing.out(Easing.ease), useNativeDriver: true }),
-          Animated.timing(v, { toValue: 0, duration: 0, useNativeDriver: true }),
-        ])
-      );
-    const a1 = mkPulse(pulse1, 0);
-    const a2 = mkPulse(pulse2, 450);
-    const a3 = mkPulse(pulse3, 900);
-    a1.start(); a2.start(); a3.start();
-    return () => { a1.stop(); a2.stop(); a3.stop(); };
-  }, []);
+  const confirmedKey = keyTier === 'confirmed' ? currentKey : null;
+  const provisionalKey = keyTier === 'provisional' ? currentKey : null;
 
-  useEffect(() => {
-    Animated.timing(noteOpacity, {
-      toValue: currentNote !== null ? 1 : 0,
-      duration: 200,
-      useNativeDriver: true,
-    }).start();
-  }, [currentNote]);
-
-  useEffect(() => {
-    Animated.timing(provOpacity, {
-      toValue: provisionalKey ? 1 : 0,
-      duration: 350,
-      useNativeDriver: true,
-    }).start();
-  }, [provisionalKey]);
-
-  const renderPulse = (v: Animated.Value) => (
-    <Animated.View style={[ss.listeningPulse, {
-      opacity: v.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.5, 0] }),
-      transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 2.6] }) }],
-    }]} />
-  );
-
-  const stateLabel =
-    statusMessage.includes('Ouvindo') ? 'OUVINDO' :
-    statusMessage.includes('Confirmando') ? 'CONFIRMANDO' :
-    statusMessage.includes('Refinando') ? 'REFINANDO' : 'ANALISANDO';
-
-  // Mensagem contextual didática abaixo do label principal
-  const hintMsg =
-    stateLabel === 'OUVINDO'
-      ? 'Cante ou toque uma nota próximo ao microfone'
-      : stateLabel === 'ANALISANDO'
-      ? 'Continue tocando — identificando a tonalidade'
-      : 'Aumentando a precisão da análise';
-
-  const provKey = provisionalKey
-    ? formatKeyDisplay(provisionalKey.root, provisionalKey.quality)
-    : null;
   const confPct = Math.round(Math.max(0, liveConfidence) * 100);
-  const confColor = confPct >= 80 ? C.green : confPct >= 60 ? C.amber : C.text2;
+  const confColor = confPct >= 75 ? C.green : confPct >= 55 ? C.amber : C.text2;
 
-  return (
-    <View style={ss.listeningRoot}>
-      {/* Status + hint */}
-      <View style={ss.listeningTop}>
-        <Text style={ss.listeningLabel}>{stateLabel}</Text>
-        <Text style={ss.listeningHint}>{hintMsg}</Text>
-      </View>
+  // Status textual contextual curto
+  const statusLabel =
+    detectionState === 'listening' ? 'OUVINDO' :
+    detectionState === 'analyzing' ? 'ANALISANDO' :
+    detectionState === 'provisional' ? 'REFINANDO TOM' :
+    detectionState === 'change_possible' ? 'MUDANÇA?' :
+    detectionState === 'confirmed' ? (isStable ? 'ESTÁVEL' : 'CONFIRMADO') :
+    'PRONTO';
 
-      {/* Center: mic with sonar */}
-      <View style={ss.listeningCenter}>
-        {renderPulse(pulse3)}
-        {renderPulse(pulse2)}
-        {renderPulse(pulse1)}
-        <View style={ss.micBtnActive}>
-          <Ionicons name="mic" size={52} color={C.bg} />
-        </View>
-      </View>
+  const statusHint =
+    detectionState === 'listening' ? 'Cante ou toque próximo ao microfone' :
+    detectionState === 'analyzing' ? 'Identificando a tonalidade...' :
+    detectionState === 'provisional' ? 'Continue — estou aumentando a precisão' :
+    detectionState === 'change_possible' ? 'Avaliando possível troca de tom' :
+    detectionState === 'confirmed' ? 'Tom identificado com segurança' :
+    '';
 
-      {/* Live note */}
-      <Animated.View style={[ss.liveNoteWrap, { opacity: noteOpacity }]}>
-        <Text style={ss.liveNoteLabel}>NOTA ATUAL</Text>
-        <Text style={ss.liveNoteBr}>{currentNote !== null ? NOTES_BR[currentNote] : '—'}</Text>
-        <Text style={ss.liveNoteIntl}>{currentNote !== null ? NOTES_INTL[currentNote] : ''}</Text>
-      </Animated.View>
-
-      {/* Recent notes breadcrumbs (últimas notas captadas) */}
-      {recentNotes.length > 0 && (
-        <View style={ss.recentWrap}>
-          <Text style={ss.recentLabel}>NOTAS CAPTADAS</Text>
-          <View style={ss.recentRow}>
-            {recentNotes.map((pc, i) => (
-              <View
-                key={`${pc}-${i}`}
-                style={[
-                  ss.recentChip,
-                  i === recentNotes.length - 1 && ss.recentChipActive,
-                ]}
-              >
-                <Text
-                  style={[
-                    ss.recentChipTxt,
-                    i === recentNotes.length - 1 && ss.recentChipTxtActive,
-                  ]}
-                >
-                  {NOTES_BR[pc]}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
-
-      {/* Tom provável (se já tem) — preview didático ANTES de confirmar */}
-      {provKey && (
-        <Animated.View style={[ss.provWrap, { opacity: provOpacity }]}>
-          <View style={ss.provBadge}>
-            <Ionicons name="musical-notes" size={12} color={C.amber} />
-            <Text style={ss.provLabel}>TOM PROVÁVEL</Text>
-          </View>
-          <Text style={ss.provKey}>
-            {provKey.noteBr} <Text style={ss.provQual}>{provKey.qualityLabel}</Text>
-          </Text>
-          <View style={ss.provConfRow}>
-            <View style={ss.provBarBg}>
-              <View style={[ss.provBarFill, { width: `${Math.min(100, confPct)}%`, backgroundColor: confColor }]} />
-            </View>
-            <Text style={[ss.provConfPct, { color: confColor }]}>{confPct}%</Text>
-          </View>
-        </Animated.View>
-      )}
-
-      {/* Soft info */}
-      {softInfo ? (
-        <View style={ss.softBar}>
-          <Ionicons name="information-circle-outline" size={15} color={C.amber} />
-          <Text style={ss.softBarTxt}>{softInfo}</Text>
-        </View>
-      ) : null}
-
-      {/* Stop */}
-      <TouchableOpacity testID="stop-btn" style={ss.stopBtn} onPress={onStop} activeOpacity={0.8}>
-        <Ionicons name="stop-circle" size={18} color={C.red} />
-        <Text style={ss.stopBtnTxt}>Parar</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// SCREEN 3 — Detected
-// ═════════════════════════════════════════════════════════════════════════════
-function DetectedScreen({
-  currentKey,
-  keyTier,
-  liveConfidence,
-  changeSuggestion,
-  currentNote,
-  isStable,
-  isRunning,
-  statusMessage,
-  onStop,
-  onReset,
-  onResume,
-}: {
-  currentKey: NonNullable<ReturnType<typeof useKeyDetection>['currentKey']>;
-  keyTier: ReturnType<typeof useKeyDetection>['keyTier'];
-  liveConfidence: number;
-  changeSuggestion: ReturnType<typeof useKeyDetection>['changeSuggestion'];
-  currentNote: number | null;
-  isStable: boolean;
-  isRunning: boolean;
-  statusMessage: string;
-  onStop: () => void;
-  onReset: () => void;
-  onResume: () => void;
-}) {
-  const keyDisplay = formatKeyDisplay(currentKey.root, currentKey.quality);
+  // Harmonic field (apenas quando tem tom confirmado ou provisional)
+  const displayKey = confirmedKey || provisionalKey;
   const harmonicField = useMemo(
-    () => getHarmonicField(currentKey.root, currentKey.quality),
-    [currentKey.root, currentKey.quality]
+    () => displayKey ? getHarmonicField(displayKey.root, displayKey.quality) : [],
+    [displayKey?.root, displayKey?.quality]
   );
 
-  const changeDisplay = useMemo(() => {
-    if (!changeSuggestion) return null;
-    return formatKeyDisplay(changeSuggestion.root, changeSuggestion.quality);
-  }, [changeSuggestion]);
-
-  const isProvisional = keyTier === 'provisional';
-  const confidencePct = Math.round(Math.max(0, liveConfidence) * 100);
-  const tierLabel = isProvisional ? 'TOM PROVÁVEL' : 'TOM DETECTADO';
-
-  const keyOpacity = useRef(new Animated.Value(0)).current;
-  const keyScale  = useRef(new Animated.Value(0.88)).current;
-  const chordsOpacity = useRef(new Animated.Value(0)).current;
+  // Animações sutis
   const statusDot = useRef(new Animated.Value(1)).current;
-  const prevKey = useRef('');
+  const noteOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const k = `${currentKey.root}-${currentKey.quality}`;
-    if (k === prevKey.current) return;
-    prevKey.current = k;
-    keyOpacity.setValue(0); keyScale.setValue(0.88); chordsOpacity.setValue(0);
-    Animated.sequence([
-      Animated.parallel([
-        Animated.timing(keyOpacity, { toValue: 1, duration: 380, useNativeDriver: true }),
-        Animated.spring(keyScale,   { toValue: 1, tension: 70, friction: 10, useNativeDriver: true }),
-      ]),
-      Animated.timing(chordsOpacity, { toValue: 1, duration: 320, useNativeDriver: true }),
-    ]).start();
-  }, [currentKey.root, currentKey.quality]);
-
-  useEffect(() => {
-    if (!isRunning) { statusDot.setValue(0.4); return; }
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(statusDot, { toValue: 0.2, duration: 700, useNativeDriver: true }),
-        Animated.timing(statusDot, { toValue: 1,   duration: 700, useNativeDriver: true }),
+        Animated.timing(statusDot, { toValue: 0.25, duration: 700, useNativeDriver: true }),
+        Animated.timing(statusDot, { toValue: 1,    duration: 700, useNativeDriver: true }),
       ])
     );
     loop.start();
     return () => loop.stop();
-  }, [isRunning]);
+  }, []);
+
+  useEffect(() => {
+    Animated.timing(noteOpacity, {
+      toValue: currentNote !== null ? 1 : 0.3,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [currentNote]);
+
+  const statusDotColor =
+    detectionState === 'listening' ? C.text2 :
+    detectionState === 'analyzing' ? C.amber :
+    detectionState === 'provisional' ? C.amber :
+    detectionState === 'change_possible' ? C.blue :
+    detectionState === 'confirmed' ? C.green :
+    C.text3;
 
   return (
-    <View style={ss.detectedRoot}>
-      {/* Header */}
-      <View style={ss.detectedHeader}>
+    <View style={ss.activeRoot}>
+      {/* ═══ HEADER ════════════════════════════════════════════════════════ */}
+      <View style={ss.activeHeader}>
         <Image source={require('../assets/images/logo-icon.png')} style={ss.headerLogo} resizeMode="contain" />
-        <Text style={ss.headerName}>Tom Certo</Text>
-        <View style={ss.statusRow}>
-          <Animated.View style={[ss.statusDot, { backgroundColor: isRunning ? C.amber : C.text3, opacity: statusDot }]} />
-          <Text style={ss.statusTxt} numberOfLines={1}>{statusMessage}</Text>
+        <Text style={ss.headerBrand}>Tom Certo</Text>
+        <View style={ss.headerStatusRow}>
+          <Animated.View style={[ss.statusDot, { backgroundColor: statusDotColor, opacity: statusDot }]} />
+          <Text style={ss.headerStatusTxt} numberOfLines={1}>{statusLabel}</Text>
         </View>
       </View>
 
-      {/* Key hero */}
-      <Animated.View style={[ss.keyHero, { opacity: keyOpacity, transform: [{ scale: keyScale }] }]}>
-        <Text style={[ss.keyHeroLabel, isProvisional && { color: C.amber }]}>{tierLabel}</Text>
-        <View style={ss.keyHeroRow}>
-          <Text style={ss.keyHeroNote}>{keyDisplay.noteBr}</Text>
-          <Text style={ss.keyHeroIntl}>({keyDisplay.noteIntl})</Text>
-        </View>
-        <View style={ss.keyQualityPill}>
-          <Text style={ss.keyQualityTxt}>{keyDisplay.qualityLabel.toUpperCase()}</Text>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={ss.scrollPad}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ═══ CAMADA 1 — STATUS / HINT ═══════════════════════════════════ */}
+        {!!statusHint && (
+          <Text style={ss.hintTxt}>{statusHint}</Text>
+        )}
+
+        {/* ═══ CAMADA 2 — NOTA ATUAL (GIGANTE, CENTRAL, TEMPO REAL) ══════ */}
+        <View style={ss.noteHero}>
+          <Text style={ss.noteHeroLabel}>NOTA EM TEMPO REAL</Text>
+          <Animated.View style={[ss.noteHeroBox, { opacity: noteOpacity }]}>
+            <Text style={ss.noteHeroTxt}>
+              {currentNote !== null ? NOTES_BR[currentNote] : '—'}
+            </Text>
+            {currentNote !== null && (
+              <Text style={ss.noteHeroIntl}>{NOTES_INTL[currentNote]}</Text>
+            )}
+          </Animated.View>
         </View>
 
-        {/* Confiança ao vivo */}
-        <View style={ss.confWrap}>
-          <Text style={ss.confLabel}>CONFIANÇA</Text>
-          <Text
-            style={[
-              ss.confValue,
-              {
-                color:
-                  confidencePct >= 80 ? C.green :
-                  confidencePct >= 60 ? C.amber : C.text2,
-              },
-            ]}
-          >
-            {confidencePct}%
-          </Text>
-          {/* Barra de confiança */}
-          <View style={ss.confBarBg}>
-            <View
-              style={[
-                ss.confBarFill,
-                {
-                  width: `${Math.min(100, confidencePct)}%`,
-                  backgroundColor:
-                    confidencePct >= 80 ? C.green :
-                    confidencePct >= 60 ? C.amber : C.text3,
-                },
-              ]}
-            />
+        {/* ═══ CAMADA 3 — HISTÓRICO DE NOTAS ═════════════════════════════ */}
+        <View style={ss.section}>
+          <Text style={ss.sectionLabel}>HISTÓRICO</Text>
+          <View style={ss.historyRow}>
+            {recentNotes.length === 0 ? (
+              <Text style={ss.historyEmpty}>— aguardando primeiras notas —</Text>
+            ) : (
+              recentNotes.map((pc, i) => {
+                const isLatest = i === recentNotes.length - 1;
+                return (
+                  <View
+                    key={`${pc}-${i}`}
+                    style={[ss.historyChip, isLatest && ss.historyChipActive]}
+                  >
+                    <Text style={[ss.historyChipTxt, isLatest && ss.historyChipTxtActive]}>
+                      {NOTES_BR[pc]}
+                    </Text>
+                  </View>
+                );
+              })
+            )}
           </View>
         </View>
-      </Animated.View>
 
-      {/* Banner de possível mudança de tom */}
-      {changeDisplay && (
-        <View style={ss.changeBanner}>
-          <Ionicons name="swap-horizontal" size={14} color={C.amber} />
-          <Text style={ss.changeBannerTxt}>
-            Possível mudança para{' '}
-            <Text style={ss.changeBannerStrong}>
-              {changeDisplay.noteBr} {changeDisplay.qualityLabel}
-            </Text>
-          </Text>
-        </View>
-      )}
-
-      {/* Stability + current note inline */}
-      <View style={ss.metaRow}>
-        <View style={ss.metaLeft}>
-          <View style={[ss.stableIndicator, { backgroundColor: isStable ? C.green : C.amber }]} />
-          <Text style={[ss.stableTxt, { color: isStable ? C.green : C.amber }]}>
-            {isStable ? 'Estável' : 'Refinando...'}
-          </Text>
-        </View>
-        {currentNote !== null && (
-          <View style={ss.metaRight}>
-            <Text style={ss.currentNoteLabel}>NOTA</Text>
-            <Text style={ss.currentNoteTxt}>{NOTES_BR[currentNote]}</Text>
+        {/* ═══ CAMADA 4 — TOM PROVÁVEL (aparece rápido, até baixa conf.) ═ */}
+        {provisionalKey && (
+          <View style={[ss.keyCard, ss.keyCardProv]}>
+            <View style={ss.keyCardHeader}>
+              <View style={[ss.keyCardBadge, { backgroundColor: C.amberMuted, borderColor: C.amberBorder }]}>
+                <Ionicons name="musical-notes" size={11} color={C.amber} />
+                <Text style={[ss.keyCardBadgeTxt, { color: C.amber }]}>TOM PROVÁVEL</Text>
+              </View>
+              <Text style={ss.keyCardConfPct}>{confPct}%</Text>
+            </View>
+            <KeyDisplay
+              root={provisionalKey.root}
+              quality={provisionalKey.quality}
+              provisional
+            />
+            <ConfidenceBar pct={confPct} color={confColor} />
           </View>
         )}
-      </View>
 
-      {/* Harmonic field */}
-      <Animated.View style={{ opacity: chordsOpacity, flex: 1 }}>
-        <Text style={ss.sectionLabel}>CAMPO HARMÔNICO</Text>
-        <View style={ss.chordGrid}>
-          {harmonicField.map((chord, i) => (
-            <View key={i} testID={`chord-${i}`}
-              style={[ss.chordCard, chord.isTonic && ss.chordCardTonic]}>
-              <Text style={ss.chordDegree}>{degreeLabel(i, currentKey.quality)}</Text>
-              <Text style={[ss.chordName, chord.isTonic && ss.chordNameTonic]}>{chord.label}</Text>
-              <Text style={ss.chordIntl}>{chordIntlLabel(chord.root, chord.quality)}</Text>
+        {/* ═══ CAMADA 5 — TOM CONFIRMADO (separado do provável) ═══════════ */}
+        {confirmedKey && (
+          <View style={[ss.keyCard, ss.keyCardConfirmed]}>
+            <View style={ss.keyCardHeader}>
+              <View style={[ss.keyCardBadge, { backgroundColor: 'rgba(34,197,94,0.10)', borderColor: 'rgba(34,197,94,0.35)' }]}>
+                <Ionicons name="checkmark-circle" size={12} color={C.green} />
+                <Text style={[ss.keyCardBadgeTxt, { color: C.green }]}>TOM CONFIRMADO</Text>
+              </View>
+              <Text style={[ss.keyCardConfPct, { color: C.green }]}>{confPct}%</Text>
             </View>
-          ))}
-        </View>
-      </Animated.View>
+            <KeyDisplay root={confirmedKey.root} quality={confirmedKey.quality} />
+            <ConfidenceBar pct={confPct} color={C.green} />
+          </View>
+        )}
 
-      {/* Actions */}
-      <View style={ss.detectedActions}>
+        {/* ═══ CAMADA 6 — BANNER DE POSSÍVEL MUDANÇA ═════════════════════ */}
+        {changeSuggestion && (
+          <View style={ss.changeBanner}>
+            <Ionicons name="swap-horizontal" size={16} color={C.blue} />
+            <Text style={ss.changeBannerTxt}>
+              Possível mudança para{' '}
+              <Text style={ss.changeBannerStrong}>
+                {formatKeyDisplay(changeSuggestion.root, changeSuggestion.quality).noteBr}{' '}
+                {formatKeyDisplay(changeSuggestion.root, changeSuggestion.quality).qualityLabel}
+              </Text>
+            </Text>
+          </View>
+        )}
+
+        {/* ═══ CAMADA 7 — CAMPO HARMÔNICO (quando há tom) ═════════════════ */}
+        {displayKey && harmonicField.length > 0 && (
+          <View style={ss.section}>
+            <Text style={ss.sectionLabel}>CAMPO HARMÔNICO</Text>
+            <View style={ss.chordGrid}>
+              {harmonicField.map((chord, i) => (
+                <View key={i} testID={`chord-${i}`}
+                  style={[ss.chordCard, chord.isTonic && ss.chordCardTonic]}>
+                  <Text style={ss.chordDegree}>{degreeLabel(i, displayKey.quality)}</Text>
+                  <Text style={[ss.chordName, chord.isTonic && ss.chordNameTonic]}>{chord.label}</Text>
+                  <Text style={ss.chordIntl}>{chordIntlLabel(chord.root, chord.quality)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* ═══ CAMADA 8 — TOGGLE MODO AO VIVO / ESTÁVEL ═══════════════════ */}
+        <ModeToggle mode={mode} onChange={setMode} />
+
+        {/* ═══ CAMADA 9 — SOFT INFO ═══════════════════════════════════════ */}
+        {softInfo ? (
+          <View style={ss.softBar}>
+            <Ionicons name="information-circle-outline" size={15} color={C.amber} />
+            <Text style={ss.softBarTxt}>{softInfo}</Text>
+          </View>
+        ) : null}
+      </ScrollView>
+
+      {/* ═══ AÇÕES FIXAS NO RODAPÉ ═══════════════════════════════════════ */}
+      <View style={ss.bottomActions}>
         {isRunning ? (
-          <TouchableOpacity testID="stop-btn-detected" style={ss.actionBtnDanger} onPress={onStop} activeOpacity={0.8}>
+          <TouchableOpacity testID="stop-btn" style={ss.actionBtnDanger} onPress={stop} activeOpacity={0.85}>
             <Ionicons name="stop-circle" size={18} color={C.red} />
             <Text style={ss.actionBtnDangerTxt}>Parar</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity testID="resume-btn" style={ss.actionBtnGhost} onPress={onResume} activeOpacity={0.8}>
+          <TouchableOpacity testID="resume-btn" style={ss.actionBtnGhost} onPress={start} activeOpacity={0.85}>
             <Ionicons name="play-circle" size={18} color={C.green} />
             <Text style={[ss.actionBtnGhostTxt, { color: C.green }]}>Continuar</Text>
           </TouchableOpacity>
         )}
-        <TouchableOpacity testID="reset-btn" style={ss.actionBtnGhost} onPress={onReset} activeOpacity={0.7}>
+        <TouchableOpacity testID="reset-btn" style={ss.actionBtnGhost} onPress={reset} activeOpacity={0.75}>
           <Ionicons name="refresh" size={16} color={C.text2} />
           <Text style={ss.actionBtnGhostTxt}>Nova detecção</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+// ─── Sub-componentes ─────────────────────────────────────────────────────────
+function KeyDisplay({ root, quality, provisional }: {
+  root: number; quality: 'major' | 'minor'; provisional?: boolean;
+}) {
+  const k = formatKeyDisplay(root, quality);
+  return (
+    <View style={ss.keyDisplayRow}>
+      <Text style={ss.keyDisplayNote}>{k.noteBr}</Text>
+      <Text style={[ss.keyDisplayQual, provisional && { color: C.amber }]}>
+        {k.qualityLabel}
+      </Text>
+      <Text style={ss.keyDisplayIntl}>({k.noteIntl})</Text>
+    </View>
+  );
+}
+
+function ConfidenceBar({ pct, color }: { pct: number; color: string }) {
+  return (
+    <View style={ss.confBarBg}>
+      <View style={[ss.confBarFill, { width: `${Math.min(100, pct)}%`, backgroundColor: color }]} />
+    </View>
+  );
+}
+
+function ModeToggle({ mode, onChange }: {
+  mode: DetectionMode; onChange: (m: DetectionMode) => void;
+}) {
+  return (
+    <View style={ss.section}>
+      <Text style={ss.sectionLabel}>MODO DE DETECÇÃO</Text>
+      <View style={ss.modeRow}>
+        <TouchableOpacity
+          testID="mode-live-btn"
+          style={[ss.modeBtn, mode === 'live' && ss.modeBtnActive]}
+          onPress={() => onChange('live')}
+          activeOpacity={0.75}
+        >
+          <Ionicons
+            name="flash"
+            size={14}
+            color={mode === 'live' ? C.amber : C.text3}
+          />
+          <View style={{ flex: 1 }}>
+            <Text style={[ss.modeBtnTitle, mode === 'live' && ss.modeBtnTitleActive]}>
+              Ao Vivo
+            </Text>
+            <Text style={ss.modeBtnSub}>Troca rápida (~2s)</Text>
+          </View>
+        </TouchableOpacity>
+        <TouchableOpacity
+          testID="mode-stable-btn"
+          style={[ss.modeBtn, mode === 'stable' && ss.modeBtnActive]}
+          onPress={() => onChange('stable')}
+          activeOpacity={0.75}
+        >
+          <Ionicons
+            name="shield-checkmark"
+            size={14}
+            color={mode === 'stable' ? C.amber : C.text3}
+          />
+          <View style={{ flex: 1 }}>
+            <Text style={[ss.modeBtnTitle, mode === 'stable' && ss.modeBtnTitleActive]}>
+              Estável
+            </Text>
+            <Text style={ss.modeBtnSub}>Máxima precisão (~3.5s)</Text>
+          </View>
         </TouchableOpacity>
       </View>
     </View>
@@ -662,7 +555,7 @@ function MicNoticeModal({ visible, onClose, onRetry, reason, message }: {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function degreeLabel(i: number, q: 'major' | 'minor') {
+function degreeLabel(i: number, _q: 'major' | 'minor') {
   return (['I','ii','iii','IV','V','vi'] as const)[i] ?? '';
 }
 function chordIntlLabel(root: number, q: 'major' | 'minor' | 'dim') {
@@ -675,11 +568,9 @@ const CHORD_GAP  = 8;
 const CHORD_W    = (SW - 32 - CHORD_GAP * 2) / 3;
 
 const ss = StyleSheet.create({
-  safe:      { flex: 1, backgroundColor: C.bg },
-  splash:    { flex: 1, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' },
-  splashTxt: { fontSize: 28, fontFamily: 'Outfit_800ExtraBold', color: C.amber },
+  safe: { flex: 1, backgroundColor: C.bg },
 
-  // ── InitialScreen ──────────────────────────────────────────────────────────
+  // ═══ INITIAL ══════════════════════════════════════════════════════════════
   initialRoot: {
     flex: 1,
     alignItems: 'center',
@@ -688,15 +579,9 @@ const ss = StyleSheet.create({
     paddingBottom: 36,
     paddingHorizontal: 24,
   },
-
-  // Brand
   brandBlock: { alignItems: 'center' },
-  logoClean: {
-    width: 220,
-    height: 220,
-  },
+  logoClean: { width: 220, height: 220 },
 
-  // Mic CTA
   micSection: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -721,19 +606,6 @@ const ss = StyleSheet.create({
     ...Platform.select({
       ios:     { shadowColor: C.amber, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 28 },
       android: { elevation: 10 },
-      default: {},
-    }),
-  },
-  micBtnActive: {
-    width: MIC_SIZE,
-    height: MIC_SIZE,
-    borderRadius: MIC_SIZE / 2,
-    backgroundColor: C.amber,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      ios:     { shadowColor: C.amber, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.7, shadowRadius: 32 },
-      android: { elevation: 12 },
       default: {},
     }),
   },
@@ -780,213 +652,242 @@ const ss = StyleSheet.create({
     letterSpacing: 0.4,
   },
 
-  // ── Listening ─────────────────────────────────────────────────────────────
-  listeningRoot: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 24,
-    paddingBottom: 32,
-    paddingHorizontal: 24,
-  },
-  listeningTop: { alignItems: 'center' },
-  listeningLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 11,
-    color: C.amber,
-    letterSpacing: 4,
-  },
-  listeningCenter: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: MIC_SIZE * 3,
-    height: MIC_SIZE * 3,
-  },
-  listeningPulse: {
-    position: 'absolute',
-    width: MIC_SIZE,
-    height: MIC_SIZE,
-    borderRadius: MIC_SIZE / 2,
-    borderWidth: 1.5,
-    borderColor: C.amber,
-  },
-  liveNoteWrap: { alignItems: 'center', gap: 2 },
-  liveNoteBr: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 72,
-    color: C.white,
-    letterSpacing: -2,
-    lineHeight: 76,
-    textAlign: 'center',
-  },
-  liveNoteIntl: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 14,
-    color: C.text2,
-    letterSpacing: 0.5,
-  },
-  softBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: C.amberMuted,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    width: '100%',
-  },
-  softBarTxt: {
-    flex: 1,
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 12,
-    color: C.amber,
-    lineHeight: 16,
-  },
-  stopBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 48,
-    paddingHorizontal: 32,
-    borderRadius: 99,
-    backgroundColor: C.redMuted,
-    borderWidth: 1.5,
-    borderColor: C.red,
-  },
-  stopBtnTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 15,
-    color: C.red,
-    letterSpacing: 0.3,
-  },
-
-  // ── Detected ──────────────────────────────────────────────────────────────
-  detectedRoot: {
+  // ═══ ACTIVE SCREEN ═════════════════════════════════════════════════════════
+  activeRoot: {
     flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 12,
-    gap: 10,
+    paddingTop: 6,
   },
-  detectedHeader: {
+  activeHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingBottom: 6,
+    paddingBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: C.border,
+    marginBottom: 8,
   },
-  headerLogo: { width: 28, height: 28 },
-  headerName: {
+  headerLogo: { width: 26, height: 26 },
+  headerBrand: {
     fontFamily: 'Outfit_700Bold',
     fontSize: 15,
     color: C.white,
     flex: 1,
     letterSpacing: -0.3,
   },
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  statusDot: { width: 6, height: 6, borderRadius: 3 },
-  statusTxt: {
-    fontFamily: 'Manrope_500Medium',
+  headerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: C.surface,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.border,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  statusDot: { width: 7, height: 7, borderRadius: 4 },
+  headerStatusTxt: {
+    fontFamily: 'Manrope_600SemiBold',
     fontSize: 10,
     color: C.text2,
-    maxWidth: 120,
+    letterSpacing: 1.5,
+  },
+
+  scrollPad: { paddingBottom: 16, gap: 14 },
+  hintTxt: {
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 12,
+    color: C.text3,
+    textAlign: 'center',
+    paddingHorizontal: 12,
+    marginTop: 2,
     letterSpacing: 0.2,
   },
 
-  keyHero: {
-    backgroundColor: C.surface,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-    paddingVertical: 20,
-    paddingHorizontal: 16,
+  // NOTA HERO
+  noteHero: {
     alignItems: 'center',
+    paddingVertical: 14,
+    backgroundColor: C.surface,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: C.border,
   },
-  keyHeroLabel: {
+  noteHeroLabel: {
     fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.amber,
-    letterSpacing: 3,
-    marginBottom: 8,
+    fontSize: 9.5,
+    color: C.text3,
+    letterSpacing: 2.5,
+    marginBottom: 2,
   },
-  keyHeroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
-  keyHeroNote: {
+  noteHeroBox: { alignItems: 'center' },
+  noteHeroTxt: {
     fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 68,
+    fontSize: 86,
     color: C.white,
-    lineHeight: 74,
-    letterSpacing: -1.5,
+    letterSpacing: -3,
+    lineHeight: 94,
     ...Platform.select({
-      ios: { textShadowColor: C.amberGlow, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 22 },
+      ios: { textShadowColor: C.amberGlow, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 24 },
       default: {},
     }),
   },
-  keyHeroIntl: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 14,
-    color: C.text3,
-  },
-  keyQualityPill: {
-    marginTop: 8,
-    paddingHorizontal: 18,
-    paddingVertical: 5,
-    backgroundColor: C.amberMuted,
-    borderRadius: 99,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-  },
-  keyQualityTxt: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 12,
-    color: C.amber,
-    letterSpacing: 2,
-  },
-
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: C.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: C.border,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  metaLeft: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  stableIndicator: { width: 7, height: 7, borderRadius: 4 },
-  stableTxt: {
+  noteHeroIntl: {
     fontFamily: 'Manrope_500Medium',
-    fontSize: 12,
-    letterSpacing: 0.3,
-  },
-  metaRight: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  currentNoteLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.text3,
-    letterSpacing: 2,
-  },
-  currentNoteTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 22,
-    color: C.amber,
-    letterSpacing: -0.5,
-    lineHeight: 26,
+    fontSize: 13,
+    color: C.text2,
+    letterSpacing: 0.8,
+    marginTop: -4,
   },
 
+  // SECTIONS
+  section: { gap: 8 },
   sectionLabel: {
     fontFamily: 'Manrope_600SemiBold',
     fontSize: 10,
     color: C.text3,
-    letterSpacing: 2.8,
-    marginBottom: 8,
+    letterSpacing: 2.5,
     paddingHorizontal: 2,
   },
+
+  // HISTÓRICO
+  historyRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: C.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: C.border,
+    minHeight: 44,
+    alignItems: 'center',
+  },
+  historyEmpty: {
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 11,
+    color: C.text3,
+    fontStyle: 'italic',
+  },
+  historyChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    minWidth: 32,
+    alignItems: 'center',
+  },
+  historyChipActive: {
+    backgroundColor: 'rgba(255,176,32,0.14)',
+    borderColor: 'rgba(255,176,32,0.50)',
+  },
+  historyChipTxt: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+    color: C.text2,
+    letterSpacing: 0.3,
+  },
+  historyChipTxtActive: { color: C.amber },
+
+  // KEY CARDS
+  keyCard: {
+    backgroundColor: C.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    gap: 10,
+  },
+  keyCardProv: { borderColor: C.amberBorder },
+  keyCardConfirmed: { borderColor: 'rgba(34,197,94,0.30)' },
+  keyCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  keyCardBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 99,
+    borderWidth: 1,
+  },
+  keyCardBadgeTxt: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 9.5,
+    letterSpacing: 1.8,
+  },
+  keyCardConfPct: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    color: C.text2,
+    letterSpacing: -0.3,
+  },
+  keyDisplayRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+  },
+  keyDisplayNote: {
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 40,
+    color: C.white,
+    lineHeight: 44,
+    letterSpacing: -1.2,
+  },
+  keyDisplayQual: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 22,
+    color: C.white,
+    letterSpacing: -0.5,
+  },
+  keyDisplayIntl: {
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 13,
+    color: C.text3,
+  },
+  confBarBg: {
+    height: 4,
+    borderRadius: 99,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+  },
+  confBarFill: {
+    height: '100%',
+    borderRadius: 99,
+  },
+
+  // CHANGE BANNER
+  changeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(96,165,250,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(96,165,250,0.35)',
+  },
+  changeBannerTxt: {
+    fontFamily: 'Manrope_500Medium',
+    fontSize: 12.5,
+    color: C.text2,
+    letterSpacing: 0.2,
+    flexShrink: 1,
+  },
+  changeBannerStrong: {
+    fontFamily: 'Outfit_700Bold',
+    color: C.blue,
+  },
+
+  // CAMPO HARMÔNICO
   chordGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: CHORD_GAP },
   chordCard: {
     width: CHORD_W,
@@ -1020,7 +921,66 @@ const ss = StyleSheet.create({
     marginTop: 1,
   },
 
-  detectedActions: { flexDirection: 'row', gap: 10 },
+  // MODE TOGGLE
+  modeRow: { flexDirection: 'row', gap: 8 },
+  modeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  modeBtnActive: {
+    backgroundColor: C.amberMuted,
+    borderColor: C.amberBorder,
+  },
+  modeBtnTitle: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    color: C.text2,
+    letterSpacing: -0.2,
+  },
+  modeBtnTitleActive: { color: C.amber },
+  modeBtnSub: {
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 10,
+    color: C.text3,
+    marginTop: 1,
+  },
+
+  // SOFT INFO
+  softBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: C.amberMuted,
+    borderWidth: 1,
+    borderColor: C.amberBorder,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  softBarTxt: {
+    flex: 1,
+    fontFamily: 'Manrope_500Medium',
+    fontSize: 12,
+    color: C.amber,
+    lineHeight: 16,
+  },
+
+  // BOTTOM ACTIONS
+  bottomActions: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingTop: 10,
+    paddingBottom: 6,
+    borderTopWidth: 1,
+    borderTopColor: C.border,
+  },
   actionBtnDanger: {
     flex: 1,
     flexDirection: 'row',
@@ -1056,7 +1016,7 @@ const ss = StyleSheet.create({
     color: C.text2,
   },
 
-  // ── Modal ────────────────────────────────────────────────────────────────
+  // ═══ MODAL ══════════════════════════════════════════════════════════════
   modalBg: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.82)',
@@ -1110,182 +1070,5 @@ const ss = StyleSheet.create({
     fontFamily: 'Manrope_500Medium',
     fontSize: 13,
     color: C.text2,
-  },
-
-  // ── ListeningScreen: hint + recent notes + provisional preview ──────────
-  listeningHint: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 12,
-    color: C.text3,
-    marginTop: 6,
-    textAlign: 'center',
-    letterSpacing: 0.2,
-    paddingHorizontal: 32,
-  },
-  liveNoteLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 9.5,
-    color: C.text3,
-    letterSpacing: 2.5,
-    marginBottom: 4,
-  },
-
-  recentWrap: {
-    marginTop: 16,
-    alignItems: 'center',
-    width: '100%',
-    paddingHorizontal: 24,
-  },
-  recentLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 9,
-    color: C.text3,
-    letterSpacing: 2.5,
-    marginBottom: 8,
-  },
-  recentRow: {
-    flexDirection: 'row',
-    gap: 6,
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-  },
-  recentChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  recentChipActive: {
-    backgroundColor: 'rgba(255,176,32,0.12)',
-    borderColor: 'rgba(255,176,32,0.45)',
-  },
-  recentChipTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 11,
-    color: C.text2,
-    letterSpacing: 0.5,
-  },
-  recentChipTxtActive: {
-    color: C.amber,
-  },
-
-  provWrap: {
-    marginTop: 18,
-    marginHorizontal: 24,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,176,32,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,176,32,0.22)',
-    alignItems: 'center',
-  },
-  provBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: 6,
-  },
-  provLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 9.5,
-    color: C.amber,
-    letterSpacing: 2.2,
-  },
-  provKey: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 22,
-    color: C.white,
-    letterSpacing: -0.5,
-    marginBottom: 10,
-  },
-  provQual: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 17,
-    color: C.amber,
-  },
-  provConfRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    width: '100%',
-    paddingHorizontal: 6,
-  },
-  provBarBg: {
-    flex: 1,
-    height: 4,
-    borderRadius: 99,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
-  },
-  provBarFill: {
-    height: '100%',
-    borderRadius: 99,
-  },
-  provConfPct: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 13,
-    letterSpacing: -0.3,
-    minWidth: 38,
-    textAlign: 'right',
-  },
-
-  // ── Confiança ao vivo ──────────────────────────────────────────────────
-  confWrap: {
-    marginTop: 18,
-    alignItems: 'center',
-    width: '100%',
-    paddingHorizontal: 36,
-  },
-  confLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 9.5,
-    color: C.text3,
-    letterSpacing: 2.5,
-    marginBottom: 6,
-  },
-  confValue: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 22,
-    letterSpacing: -0.5,
-    marginBottom: 8,
-  },
-  confBarBg: {
-    width: '70%',
-    height: 4,
-    borderRadius: 99,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    overflow: 'hidden',
-  },
-  confBarFill: {
-    height: '100%',
-    borderRadius: 99,
-  },
-
-  // ── Banner de mudança ──────────────────────────────────────────────────
-  changeBanner: {
-    marginHorizontal: 20,
-    marginTop: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,176,32,0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,176,32,0.28)',
-  },
-  changeBannerTxt: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 12,
-    color: C.text2,
-    letterSpacing: 0.2,
-  },
-  changeBannerStrong: {
-    fontFamily: 'Outfit_700Bold',
-    color: C.amber,
   },
 });

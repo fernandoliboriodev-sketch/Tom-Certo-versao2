@@ -49,43 +49,50 @@ import { frequencyToMidi, midiToPitchClass, formatKeyDisplay } from '../utils/no
 // ─── Janelas ───────────────────────────────────────────────────────────────
 const HISTORY_MS = 15000;
 const RECENT_WINDOW_MS = 4000;      // janela curta para shadow tracking
-const ANALYZE_INTERVAL_MS = 300;
+const ANALYZE_INTERVAL_MS = 250;    // ↓ 300 → 250ms (UI mais responsiva)
 
-// ─── Filtros de qualidade ──────────────────────────────────────────────────
-const MIN_RMS = 0.020;
-const MIN_CLARITY = 0.88;
-const FREQ_SMOOTH_WINDOW = 7;
+// ─── Filtros de qualidade (AFROUXADOS para resposta rápida) ────────────────
+const MIN_RMS = 0.018;              // ↓ 0.020 → 0.018 (levemente mais sensível)
+const MIN_CLARITY = 0.82;           // ↓ 0.88 → 0.82 (mostra nota antes)
+const FREQ_SMOOTH_WINDOW = 5;       // ↓ 7 → 5 (menos lag, ~320ms)
 
-// ─── Camada 1: Provisional (RÁPIDO) ────────────────────────────────────────
-const PROV_MIN_MS = 1200;           // ↓ de 1800 → 1200ms (33% mais rápido)
-const PROV_MIN_SAMPLES = 6;         // ↓ de 10 → 6 (mais rápido)
-const PROV_MIN_UNIQUE = 3;
-const PROV_MIN_CONFIDENCE = 0.50;   // ↑ um pouco (mais assertivo inicial)
+// ─── Histerese anti-vibrato ────────────────────────────────────────────────
+// Se variação de MIDI < 30 cents do último valor mostrado, mantém pitch class
+const HYSTERESIS_CENTS = 30;
+
+// ─── Camada 1: Provisional (RESPOSTA IMEDIATA) ─────────────────────────────
+const PROV_MIN_MS = 500;            // ↓ 1200 → 500ms (mostra rápido!)
+const PROV_MIN_SAMPLES = 3;         // ↓ 6 → 3
+const PROV_MIN_UNIQUE = 2;          // ↓ 3 → 2 notas distintas já basta
+const PROV_MIN_CONFIDENCE = 0.40;   // ↓ 0.50 → 0.40 (mais permissivo)
 
 // ─── Camada 2: Confirmed ───────────────────────────────────────────────────
-const CONF_MIN_MS = 5000;
-const CONF_MIN_UNIQUE = 5;
-const CONF_MIN_CONFIDENCE = 0.75;
-const CONF_CONFIRM_FRAMES = 5;
+const CONF_MIN_MS = 4000;           // ↓ 5000 → 4000
+const CONF_MIN_UNIQUE = 4;          // ↓ 5 → 4
+const CONF_MIN_CONFIDENCE = 0.70;   // ↓ 0.75 → 0.70
+const CONF_CONFIRM_FRAMES = 4;      // ↓ 5 → 4
 
-// ─── Shadow tracking — análise OCULTA de mudança ──────────────────────────
-// Não mostra nada ao usuário até estes critérios serem atendidos:
-const SHADOW_MIN_FRAMES = 8;        // ~2.4s de consistência silenciosa
-const SHADOW_MARGIN = 0.10;         // candidato precisa estar X% acima do atual
-const SHADOW_CURRENT_WEAKENING = 0.65; // e atual precisa estar abaixo disto
+// ─── Shadow tracking — DUAL MODE ─────────────────────────────────────────
+// Valores controlados pelo modo escolhido pelo usuário (live/stable)
+const SHADOW_MIN_FRAMES_LIVE = 5;   // ~1.25s
+const SHADOW_MIN_FRAMES_STABLE = 8; // ~2.0s
+const SHADOW_MARGIN = 0.08;         // candidato precisa estar X% acima do atual
+const SHADOW_CURRENT_WEAKENING = 0.68;
 
 // ─── Confirmação de mudança (após SHADOW sugerir) ─────────────────────────
-const CHANGE_EXTRA_CONFIRM_FRAMES = 6;
-const CHANGE_MIN_CONFIDENCE = 0.70;
+const CHANGE_EXTRA_CONFIRM_FRAMES_LIVE = 3;   // +0.75s → total ~2s
+const CHANGE_EXTRA_CONFIRM_FRAMES_STABLE = 6; // +1.5s → total ~3.5s
+const CHANGE_MIN_CONFIDENCE = 0.65;
 
 // ─── Pesos do histograma ───────────────────────────────────────────────────
 const HISTOGRAM_DECAY = 2.0;
 const REPETITION_BOOST = 4.0;
 const DURATION_BOOST = 2.5;
 const CADENCE_BOOST = 1.8;          // últimas 3 notas ganham peso extra
+const TONIC_SUSTAIN_BOOST = 2.5;    // nota sustentada (runLength≥3) final: +150%
 
 // ─── UX ───────────────────────────────────────────────────────────────────
-const NOTE_DISPLAY_HOLD_MS = 300;
+const NOTE_DISPLAY_HOLD_MS = 180;   // ↓ 300 → 180ms (atualização mais fluida)
 const SILENCE_HINT_MS = 8000;
 const SILENCE_RETRY_MS = 20000;
 
@@ -106,6 +113,8 @@ export type DetectionState =
 
 export type KeyTier = 'provisional' | 'confirmed' | null;
 
+export type DetectionMode = 'live' | 'stable';
+
 export interface UseKeyDetectionReturn {
   detectionState: DetectionState;
   currentKey: KeyResult | null;
@@ -121,6 +130,8 @@ export interface UseKeyDetectionReturn {
   errorMessage: string | null;
   errorReason: PitchErrorReason | null;
   softInfo: string | null;
+  mode: DetectionMode;
+  setMode: (m: DetectionMode) => void;
   start: () => Promise<boolean>;
   stop: () => void;
   reset: () => void;
@@ -140,12 +151,19 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorReason, setErrorReason] = useState<PitchErrorReason | null>(null);
   const [softInfo, setSoftInfo] = useState<string | null>(null);
+  const [mode, setModeState] = useState<DetectionMode>('live');
 
   const noteHistory = useRef<NoteEvent[]>([]);
   const freqBuffer = useRef<number[]>([]);
   const currentKeyRef = useRef<KeyResult | null>(null);
   const currentTierRef = useRef<KeyTier>(null);
   const changeSuggestionRef = useRef<KeyResult | null>(null);
+  const modeRef = useRef<DetectionMode>('live');
+
+  const setMode = useCallback((m: DetectionMode) => {
+    modeRef.current = m;
+    setModeState(m);
+  }, []);
 
   // Contadores para máquina de estados
   const confirmRef = useRef<{ root: number; quality: string; count: number } | null>(null);
@@ -160,6 +178,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isRunningRef = useRef(false);
   const lastPitchRef = useRef<number | null>(null);
+  const lastMidiRef = useRef<number | null>(null); // MIDI EMA para histerese anti-vibrato
   const noteDisplayRef = useRef<{ pc: number; setAt: number } | null>(null);
   const isStartingRef = useRef(false);
   const lastRecentUpdateRef = useRef<number>(0);
@@ -189,7 +208,24 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     if (freqBuffer.current.length > FREQ_SMOOTH_WINDOW) freqBuffer.current.shift();
     const sortedFreqs = [...freqBuffer.current].sort((a, b) => a - b);
     const medianFreq = sortedFreqs[Math.floor(sortedFreqs.length / 2)];
-    const pc = midiToPitchClass(frequencyToMidi(medianFreq));
+    const currentMidi = frequencyToMidi(medianFreq);
+    let pc = midiToPitchClass(currentMidi);
+
+    // ── Histerese anti-vibrato ─────────────────────────────────────────────
+    // Se a variação em cents desde a última nota exibida < 30, mantém a nota
+    // atual (evita troca de pitch class por oscilação vocal/vibrato).
+    if (lastPitchRef.current !== null && lastMidiRef.current !== null) {
+      const centsDelta = Math.abs(currentMidi - lastMidiRef.current) * 100;
+      if (centsDelta < HYSTERESIS_CENTS && pc !== lastPitchRef.current) {
+        pc = lastPitchRef.current as typeof pc;
+      }
+    }
+
+    // EMA do MIDI (suaviza "centro" da nota sustentada)
+    lastMidiRef.current =
+      lastMidiRef.current === null
+        ? currentMidi
+        : lastMidiRef.current * 0.6 + currentMidi * 0.4;
 
     let runLength = 1;
     if (lastPitchRef.current === pc) {
@@ -211,14 +247,14 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       setCurrentNote(pc);
     }
 
-    if (now - lastRecentUpdateRef.current >= 200) {
+    if (now - lastRecentUpdateRef.current >= 180) {
       lastRecentUpdateRef.current = now;
       const all = noteHistory.current.slice(-60).map(n => n.pitchClass);
       const dedup: number[] = [];
       for (const p of all) {
         if (dedup.length === 0 || dedup[dedup.length - 1] !== p) dedup.push(p);
       }
-      setRecentNotes(dedup.slice(-6));
+      setRecentNotes(dedup.slice(-8));
     }
   }, []);
 
@@ -273,12 +309,31 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       histogram[pc] *= CADENCE_BOOST;
     }
 
+    // ── TÔNICA SUSTENTADA: última nota com runLength ≥ 3 ganha peso MAIOR ──
+    // Resolve ambiguidade C maior vs A menor: a nota onde a pessoa "descansa"
+    // (sustentada no fim) é a tônica real.
+    for (let i = history.length - 1; i >= 0; i--) {
+      const n = history[i];
+      if (n.runLength >= 3) {
+        histogram[n.pitchClass] *= TONIC_SUSTAIN_BOOST;
+        break; // só a mais recente sustentada
+      }
+    }
+
     return histogram;
   }, []);
 
   // ── analyzeKey: máquina de estados com shadow tracking ──────────────────
   const analyzeKey = useCallback(() => {
     if (!isRunningRef.current) return;
+
+    // Resolver parâmetros conforme modo atual
+    const SHADOW_MIN_FRAMES =
+      modeRef.current === 'live' ? SHADOW_MIN_FRAMES_LIVE : SHADOW_MIN_FRAMES_STABLE;
+    const CHANGE_EXTRA_CONFIRM_FRAMES =
+      modeRef.current === 'live'
+        ? CHANGE_EXTRA_CONFIRM_FRAMES_LIVE
+        : CHANGE_EXTRA_CONFIRM_FRAMES_STABLE;
 
     const now = Date.now();
     noteHistory.current = noteHistory.current.filter(n => n.timestamp >= now - HISTORY_MS);
@@ -576,6 +631,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       changeRef.current = null;
       shadowRef.current = null;
       lastPitchRef.current = null;
+      lastMidiRef.current = null;
       noteDisplayRef.current = null;
       lastValidPitchAtRef.current = 0;
       silenceHintShownRef.current = false;
@@ -666,6 +722,8 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     errorMessage,
     errorReason,
     softInfo,
+    mode,
+    setMode,
     start,
     stop,
     reset,
