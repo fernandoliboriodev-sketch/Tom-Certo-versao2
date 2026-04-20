@@ -101,8 +101,8 @@ function InitialScreen({
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(fadeIn,  { toValue: 1, duration: 700, useNativeDriver: true }),
-      Animated.timing(slideUp, { toValue: 0, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(fadeIn,  { toValue: 1, duration: 280, useNativeDriver: true }),
+      Animated.timing(slideUp, { toValue: 0, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
     ]).start();
 
     const logoLoop = Animated.loop(
@@ -295,6 +295,18 @@ function ActiveScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
           <Animated.View style={[ss.statusDot, { backgroundColor: statusDotColor, opacity: statusDot }]} />
           <Text style={ss.headerStatusTxt} numberOfLines={1}>{statusLabel}</Text>
         </View>
+        <TouchableOpacity
+          testID="header-close-btn"
+          style={ss.headerCloseBtn}
+          onPress={() => {
+            console.log('[UI] Header close pressed');
+            reset();
+          }}
+          activeOpacity={0.6}
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+        >
+          <Ionicons name="close" size={22} color={C.text2} />
+        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -422,19 +434,46 @@ function ActiveScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
       </ScrollView>
 
       {/* ═══ AÇÕES FIXAS NO RODAPÉ ═══════════════════════════════════════ */}
-      <View style={ss.bottomActions}>
+      <View style={ss.bottomActions} pointerEvents="box-none">
         {isRunning ? (
-          <TouchableOpacity testID="stop-btn" style={ss.actionBtnDanger} onPress={stop} activeOpacity={0.85}>
+          <TouchableOpacity
+            testID="stop-btn"
+            style={ss.actionBtnDanger}
+            onPress={() => {
+              console.log('[UI] Stop button pressed');
+              stop();
+            }}
+            activeOpacity={0.7}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <Ionicons name="stop-circle" size={18} color={C.red} />
             <Text style={ss.actionBtnDangerTxt}>Parar</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity testID="resume-btn" style={ss.actionBtnGhost} onPress={start} activeOpacity={0.85}>
+          <TouchableOpacity
+            testID="resume-btn"
+            style={ss.actionBtnGhost}
+            onPress={() => {
+              console.log('[UI] Resume button pressed');
+              start();
+            }}
+            activeOpacity={0.7}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <Ionicons name="play-circle" size={18} color={C.green} />
             <Text style={[ss.actionBtnGhostTxt, { color: C.green }]}>Continuar</Text>
           </TouchableOpacity>
         )}
-        <TouchableOpacity testID="reset-btn" style={ss.actionBtnGhost} onPress={reset} activeOpacity={0.75}>
+        <TouchableOpacity
+          testID="reset-btn"
+          style={ss.actionBtnGhost}
+          onPress={() => {
+            console.log('[UI] Reset button pressed');
+            reset();
+          }}
+          activeOpacity={0.7}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
           <Ionicons name="refresh" size={16} color={C.text2} />
           <Text style={ss.actionBtnGhostTxt}>Nova detecção</Text>
         </TouchableOpacity>
@@ -692,6 +731,17 @@ const ss = StyleSheet.create({
     fontSize: 10,
     color: C.text2,
     letterSpacing: 1.5,
+  },
+  headerCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    marginLeft: 4,
   },
 
   scrollPad: { paddingBottom: 16, gap: 14 },
@@ -977,9 +1027,15 @@ const ss = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     paddingTop: 10,
-    paddingBottom: 6,
+    paddingBottom: 10,
     borderTopWidth: 1,
     borderTopColor: C.border,
+    backgroundColor: C.bg,
+    zIndex: 100,
+    ...Platform.select({
+      android: { elevation: 12 },
+      default: {},
+    }),
   },
   actionBtnDanger: {
     flex: 1,
@@ -987,7 +1043,7 @@ const ss = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 7,
-    height: 46,
+    height: 52,
     borderRadius: 99,
     backgroundColor: C.redMuted,
     borderWidth: 1.5,
@@ -995,7 +1051,7 @@ const ss = StyleSheet.create({
   },
   actionBtnDangerTxt: {
     fontFamily: 'Outfit_700Bold',
-    fontSize: 14,
+    fontSize: 15,
     color: C.red,
   },
   actionBtnGhost: {
@@ -1004,15 +1060,15 @@ const ss = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 7,
-    height: 46,
+    height: 52,
     borderRadius: 99,
     backgroundColor: C.surface,
     borderWidth: 1,
-    borderColor: C.border,
+    borderColor: C.borderStrong,
   },
   actionBtnGhostTxt: {
     fontFamily: 'Manrope_600SemiBold',
-    fontSize: 13,
+    fontSize: 14,
     color: C.text2,
   },
 
