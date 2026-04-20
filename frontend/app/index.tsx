@@ -24,6 +24,7 @@ import {
   getHarmonicField,
 } from '../src/utils/noteUtils';
 import { useAuth } from '../src/auth/AuthContext';
+import AudioVisualizer from '../src/components/AudioVisualizer';
 
 const { width: SW, height: SH } = Dimensions.get('window');
 
@@ -213,6 +214,7 @@ function ActiveScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
     changeSuggestion,
     currentNote,
     recentNotes,
+    audioLevel,
     isStable,
     isRunning,
     statusMessage,
@@ -319,17 +321,45 @@ function ActiveScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
           <Text style={ss.hintTxt}>{statusHint}</Text>
         )}
 
-        {/* ═══ CAMADA 2 — NOTA ATUAL (GIGANTE, CENTRAL, TEMPO REAL) ══════ */}
+        {/* ═══ CAMADA 2 — NOTA ATUAL (GIGANTE) ou VISUALIZER ══════════════ */}
         <View style={ss.noteHero}>
-          <Text style={ss.noteHeroLabel}>NOTA EM TEMPO REAL</Text>
-          <Animated.View style={[ss.noteHeroBox, { opacity: noteOpacity }]}>
-            <Text style={ss.noteHeroTxt}>
-              {currentNote !== null ? NOTES_BR[currentNote] : '—'}
-            </Text>
-            {currentNote !== null && (
-              <Text style={ss.noteHeroIntl}>{NOTES_INTL[currentNote]}</Text>
-            )}
-          </Animated.View>
+          {currentNote !== null ? (
+            <>
+              <View style={ss.noteHeroTopRow}>
+                <Text style={ss.noteHeroLabel}>VOCÊ ESTÁ CANTANDO</Text>
+                <AudioVisualizer
+                  level={audioLevel}
+                  color={C.amber}
+                  height={22}
+                  bars={5}
+                  active
+                />
+              </View>
+              <Animated.View style={[ss.noteHeroBox, { opacity: noteOpacity }]}>
+                <Text style={ss.noteHeroTxt}>{NOTES_BR[currentNote]}</Text>
+                <Text style={ss.noteHeroIntl}>{NOTES_INTL[currentNote]}</Text>
+              </Animated.View>
+            </>
+          ) : (
+            <View style={ss.listeningHero}>
+              <View style={[ss.listeningPulse, { transform: [{ scale: 1 + audioLevel * 0.3 }] }]} />
+              <Ionicons name="mic" size={48} color={C.amber} style={{ marginBottom: 14 }} />
+              <Text style={ss.listeningTitle}>
+                {detectionState === 'analyzing' ? 'Analisando...' : 'Ouvindo'}
+              </Text>
+              <Text style={ss.listeningSub}>
+                {detectionState === 'analyzing'
+                  ? 'Identificando a tonalidade das notas'
+                  : 'Cante ou toque — o app já começou a captar'}
+              </Text>
+              <View style={{ marginTop: 18 }}>
+                <AudioVisualizer level={audioLevel} color={C.amber} height={52} bars={9} active />
+              </View>
+              <Text style={ss.listeningHint}>
+                {audioLevel > 0.3 ? '● Captando áudio' : '○ Sem som detectado ainda'}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* ═══ CAMADA 3 — HISTÓRICO DE NOTAS ═════════════════════════════ */}
@@ -757,38 +787,84 @@ const ss = StyleSheet.create({
 
   // NOTA HERO
   noteHero: {
-    alignItems: 'center',
-    paddingVertical: 14,
     backgroundColor: C.surface,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: C.border,
+    overflow: 'hidden',
+  },
+  noteHeroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 2,
   },
   noteHeroLabel: {
     fontFamily: 'Manrope_600SemiBold',
-    fontSize: 9.5,
+    fontSize: 10,
     color: C.text3,
     letterSpacing: 2.5,
-    marginBottom: 2,
   },
-  noteHeroBox: { alignItems: 'center' },
+  noteHeroBox: { alignItems: 'center', paddingBottom: 16 },
   noteHeroTxt: {
     fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 86,
+    fontSize: 128,
     color: C.white,
-    letterSpacing: -3,
-    lineHeight: 94,
+    letterSpacing: -5,
+    lineHeight: 138,
     ...Platform.select({
-      ios: { textShadowColor: C.amberGlow, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 24 },
+      ios: { textShadowColor: C.amberGlow, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 32 },
       default: {},
     }),
   },
   noteHeroIntl: {
     fontFamily: 'Manrope_500Medium',
+    fontSize: 14,
+    color: C.text2,
+    letterSpacing: 1,
+    marginTop: -8,
+  },
+
+  // LISTENING HERO (antes de detectar nota)
+  listeningHero: {
+    alignItems: 'center',
+    paddingVertical: 34,
+    paddingHorizontal: 20,
+    position: 'relative',
+  },
+  listeningPulse: {
+    position: 'absolute',
+    top: '50%',
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: C.amberMuted,
+    marginTop: -120,
+    opacity: 0.35,
+  },
+  listeningTitle: {
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 32,
+    color: C.white,
+    letterSpacing: -1,
+    marginBottom: 6,
+  },
+  listeningSub: {
+    fontFamily: 'Manrope_400Regular',
     fontSize: 13,
     color: C.text2,
-    letterSpacing: 0.8,
-    marginTop: -4,
+    textAlign: 'center',
+    maxWidth: 260,
+    lineHeight: 18,
+  },
+  listeningHint: {
+    fontFamily: 'Manrope_500Medium',
+    fontSize: 11,
+    color: C.text3,
+    letterSpacing: 0.5,
+    marginTop: 18,
   },
 
   // SECTIONS

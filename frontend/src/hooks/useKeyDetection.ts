@@ -84,15 +84,15 @@ const CHANGE_EXTRA_CONFIRM_FRAMES_LIVE = 3;   // +0.75s → total ~2s
 const CHANGE_EXTRA_CONFIRM_FRAMES_STABLE = 6; // +1.5s → total ~3.5s
 const CHANGE_MIN_CONFIDENCE = 0.65;
 
-// ─── Pesos do histograma ───────────────────────────────────────────────────
+// ─── Pesos do histograma (recalibrados após bug E major → A minor) ────────
 const HISTOGRAM_DECAY = 2.0;
-const REPETITION_BOOST = 4.0;
-const DURATION_BOOST = 2.5;
-const CADENCE_BOOST = 1.8;          // últimas 3 notas ganham peso extra
-const TONIC_SUSTAIN_BOOST = 2.5;    // nota sustentada (runLength≥3) final: +150%
+const REPETITION_BOOST = 2.5;       // ↓ 4.0 → 2.5 (menos viés por repetição)
+const DURATION_BOOST = 1.5;         // ↓ 2.5 → 1.5
+const CADENCE_BOOST = 1.3;          // ↓ 1.8 → 1.3 (últimas 3 notas)
+const TONIC_SUSTAIN_BOOST = 1.5;    // ↓ 2.5 → 1.5 (CORRIGE bug E major vs A minor)
 
 // ─── UX ───────────────────────────────────────────────────────────────────
-const NOTE_DISPLAY_HOLD_MS = 180;   // ↓ 300 → 180ms (atualização mais fluida)
+const NOTE_DISPLAY_HOLD_MS = 60;    // ↓ 180 → 60ms (tempo real de verdade)
 const SILENCE_HINT_MS = 8000;
 const SILENCE_RETRY_MS = 20000;
 
@@ -123,6 +123,7 @@ export interface UseKeyDetectionReturn {
   changeSuggestion: KeyResult | null;
   currentNote: number | null;
   recentNotes: number[];
+  audioLevel: number;
   isStable: boolean;
   statusMessage: string;
   isRunning: boolean;
@@ -145,6 +146,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const [changeSuggestion, setChangeSuggestion] = useState<KeyResult | null>(null);
   const [currentNote, setCurrentNote] = useState<number | null>(null);
   const [recentNotes, setRecentNotes] = useState<number[]>([]);
+  const [audioLevel, setAudioLevel] = useState<number>(0); // 0..1 (RMS normalizado) p/ visualizer
   const [isStable, setIsStable] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Pronto para detectar');
   const [isRunning, setIsRunning] = useState(false);
@@ -182,6 +184,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const noteDisplayRef = useRef<{ pc: number; setAt: number } | null>(null);
   const isStartingRef = useRef(false);
   const lastRecentUpdateRef = useRef<number>(0);
+  const audioLevelRef = useRef<number>(0); // escrito em onPitch, drenado por analyzeKey
 
   const engine = usePitchEngine();
   const engineRef = useRef(engine);
@@ -198,6 +201,13 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   // ── onPitch ─────────────────────────────────────────────────────────────
   const onPitch = useCallback((e: PitchEvent) => {
     if (!isRunningRef.current) return;
+
+    // SEMPRE registrar o nível de áudio (mesmo antes de passar filtros),
+    // para o visualizer da UI mostrar que o mic está captando.
+    // EMA suave para não oscilar demais
+    const normLevel = Math.min(1, e.rms * 8); // 0..1 (8× ganho para visualização)
+    audioLevelRef.current = audioLevelRef.current * 0.6 + normLevel * 0.4;
+
     if (e.rms < MIN_RMS || e.clarity < MIN_CLARITY) return;
 
     const now = Date.now();
@@ -241,6 +251,8 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       runLength,
     });
 
+    // ── DISPLAY RÁPIDO: setCurrentNote quase instantâneo ──────────────────
+    // Hold de 60ms apenas para evitar flood de re-renders em hardware fraco
     const disp = noteDisplayRef.current;
     if (!disp || now - disp.setAt >= NOTE_DISPLAY_HOLD_MS) {
       noteDisplayRef.current = { pc, setAt: now };
@@ -337,6 +349,9 @@ export function useKeyDetection(): UseKeyDetectionReturn {
 
     const now = Date.now();
     noteHistory.current = noteHistory.current.filter(n => n.timestamp >= now - HISTORY_MS);
+
+    // Drena audio level para o state (sincroniza UI do visualizer)
+    setAudioLevel(audioLevelRef.current);
 
     const fullHistory = noteHistory.current;
     const recentHistory = fullHistory.filter(n => n.timestamp >= now - RECENT_WINDOW_MS);
@@ -632,6 +647,8 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       shadowRef.current = null;
       lastPitchRef.current = null;
       lastMidiRef.current = null;
+      audioLevelRef.current = 0;
+      setAudioLevel(0);
       noteDisplayRef.current = null;
       lastValidPitchAtRef.current = 0;
       silenceHintShownRef.current = false;
@@ -715,6 +732,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     changeSuggestion,
     currentNote,
     recentNotes,
+    audioLevel,
     isStable,
     statusMessage,
     isRunning,
