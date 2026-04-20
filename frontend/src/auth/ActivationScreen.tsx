@@ -217,7 +217,7 @@ export default function ActivationScreen() {
             {/* ── Brand block ──────────────────────────────────────────── */}
             <View style={ss.brandBlock}>
               <Animated.Image
-                source={require('../../assets/images/logo-icon.png')}
+                source={require('../../assets/images/logo-full.png')}
                 style={[
                   ss.logo,
                   {
@@ -227,7 +227,6 @@ export default function ActivationScreen() {
                 ]}
                 resizeMode="contain"
               />
-              <Text style={ss.appName}>Tom Certo</Text>
               <Text style={ss.tagline}>Detector de tonalidade</Text>
             </View>
 
@@ -362,19 +361,12 @@ const ss = StyleSheet.create({
   // ── Brand ──────────────────────────────────────────────────────────────
   brandBlock: {
     alignItems: 'center',
-    marginBottom: SH * 0.07,
+    marginBottom: SH * 0.06,
   },
   logo: {
-    width: 118,
-    height: 118,
-    marginBottom: 20,
-  },
-  appName: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 36,
-    color: C.white,
-    letterSpacing: -1.2,
-    textAlign: 'center',
+    width: 210,
+    height: 210,
+    marginBottom: 4,
   },
   tagline: {
     fontFamily: 'Manrope_500Medium',
@@ -382,7 +374,7 @@ const ss = StyleSheet.create({
     color: C.text3,
     letterSpacing: 3.2,
     textTransform: 'uppercase',
-    marginTop: 8,
+    marginTop: 2,
   },
 
   // ── Input minimalista ────────────────────────────────────────────────

@@ -210,14 +210,13 @@ function InitialScreen({
   return (
     <Animated.View style={[ss.initialRoot, { opacity: fadeIn, transform: [{ translateY: slideUp }] }]}>
 
-      {/* ── BRAND BLOCK: Logo + Nome ── */}
+      {/* ── BRAND BLOCK: Logo oficial (com texto integrado) ── */}
       <View style={ss.brandBlock}>
         <Animated.Image
-          source={require('../assets/images/logo-icon.png')}
+          source={require('../assets/images/logo-full.png')}
           style={[ss.logoClean, { opacity: logoGlow }]}
           resizeMode="contain"
         />
-        <Text style={ss.appName}>Tom Certo</Text>
       </View>
 
       {/* ── MIC SECTION: Shazam-style CTA ── */}
@@ -628,17 +627,10 @@ const ss = StyleSheet.create({
   },
 
   // Brand
-  brandBlock: { alignItems: 'center', gap: 10 },
+  brandBlock: { alignItems: 'center' },
   logoClean: {
-    width: 100,
-    height: 100,
-  },
-  appName: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 36,
-    color: C.white,
-    letterSpacing: -1,
-    textAlign: 'center',
+    width: 220,
+    height: 220,
   },
 
   // Mic CTA
