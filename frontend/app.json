@@ -50,7 +50,12 @@
       "typedRoutes": true
     },
     "extra": {
-      "backendUrl": "https://tom-certo.preview.emergentagent.com"
-    }
+      "backendUrl": "https://tom-certo.preview.emergentagent.com",
+      "router": {},
+      "eas": {
+        "projectId": "26ff52f7-2beb-4c73-b7bc-928c02f7d7dc"
+      }
+    },
+    "owner": "fernandosliborio"
   }
 }
