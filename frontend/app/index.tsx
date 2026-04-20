@@ -63,11 +63,15 @@ export default function HomeScreen() {
     reset,
   } = useKeyDetection();
 
-  const screen: 'initial' | 'listening' | 'detected' = currentKey
-    ? 'detected'
-    : isRunning
-    ? 'listening'
-    : 'initial';
+  // Nova regra: só vai para DetectedScreen quando o tom está CONFIRMADO.
+  // Enquanto está em fase provisional, o usuário continua vendo o ListeningScreen
+  // (com preview "Tom provável" embutido) — evita saltos bruscos de UI.
+  const screen: 'initial' | 'listening' | 'detected' =
+    keyTier === 'confirmed' && currentKey
+      ? 'detected'
+      : isRunning
+      ? 'listening'
+      : 'initial';
 
   return (
     <SafeAreaView style={ss.safe} edges={['top', 'bottom']}>
@@ -75,7 +79,15 @@ export default function HomeScreen() {
         <InitialScreen onStart={start} errorMessage={errorMessage} errorReason={errorReason} />
       )}
       {screen === 'listening' && (
-        <ListeningScreen onStop={stop} statusMessage={statusMessage} currentNote={currentNote} softInfo={softInfo} />
+        <ListeningScreen
+          onStop={stop}
+          statusMessage={statusMessage}
+          currentNote={currentNote}
+          recentNotes={recentNotes}
+          provisionalKey={currentKey}
+          liveConfidence={liveConfidence}
+          softInfo={softInfo}
+        />
       )}
       {screen === 'detected' && (
         <DetectedScreen
@@ -249,17 +261,24 @@ function ListeningScreen({
   onStop,
   statusMessage,
   currentNote,
+  recentNotes,
+  provisionalKey,
+  liveConfidence,
   softInfo,
 }: {
   onStop: () => void;
   statusMessage: string;
   currentNote: number | null;
+  recentNotes: number[];
+  provisionalKey: ReturnType<typeof useKeyDetection>['currentKey'];
+  liveConfidence: number;
   softInfo: string | null;
 }) {
   const pulse1 = useRef(new Animated.Value(0)).current;
   const pulse2 = useRef(new Animated.Value(0)).current;
   const pulse3 = useRef(new Animated.Value(0)).current;
   const noteOpacity = useRef(new Animated.Value(0)).current;
+  const provOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const mkPulse = (v: Animated.Value, delay: number) =>
@@ -285,6 +304,14 @@ function ListeningScreen({
     }).start();
   }, [currentNote]);
 
+  useEffect(() => {
+    Animated.timing(provOpacity, {
+      toValue: provisionalKey ? 1 : 0,
+      duration: 350,
+      useNativeDriver: true,
+    }).start();
+  }, [provisionalKey]);
+
   const renderPulse = (v: Animated.Value) => (
     <Animated.View style={[ss.listeningPulse, {
       opacity: v.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.5, 0] }),
@@ -297,11 +324,26 @@ function ListeningScreen({
     statusMessage.includes('Confirmando') ? 'CONFIRMANDO' :
     statusMessage.includes('Refinando') ? 'REFINANDO' : 'ANALISANDO';
 
+  // Mensagem contextual didática abaixo do label principal
+  const hintMsg =
+    stateLabel === 'OUVINDO'
+      ? 'Cante ou toque uma nota próximo ao microfone'
+      : stateLabel === 'ANALISANDO'
+      ? 'Continue tocando — identificando a tonalidade'
+      : 'Aumentando a precisão da análise';
+
+  const provKey = provisionalKey
+    ? formatKeyDisplay(provisionalKey.root, provisionalKey.quality)
+    : null;
+  const confPct = Math.round(Math.max(0, liveConfidence) * 100);
+  const confColor = confPct >= 80 ? C.green : confPct >= 60 ? C.amber : C.text2;
+
   return (
     <View style={ss.listeningRoot}>
-      {/* Status */}
+      {/* Status + hint */}
       <View style={ss.listeningTop}>
         <Text style={ss.listeningLabel}>{stateLabel}</Text>
+        <Text style={ss.listeningHint}>{hintMsg}</Text>
       </View>
 
       {/* Center: mic with sonar */}
@@ -316,9 +358,56 @@ function ListeningScreen({
 
       {/* Live note */}
       <Animated.View style={[ss.liveNoteWrap, { opacity: noteOpacity }]}>
+        <Text style={ss.liveNoteLabel}>NOTA ATUAL</Text>
         <Text style={ss.liveNoteBr}>{currentNote !== null ? NOTES_BR[currentNote] : '—'}</Text>
         <Text style={ss.liveNoteIntl}>{currentNote !== null ? NOTES_INTL[currentNote] : ''}</Text>
       </Animated.View>
+
+      {/* Recent notes breadcrumbs (últimas notas captadas) */}
+      {recentNotes.length > 0 && (
+        <View style={ss.recentWrap}>
+          <Text style={ss.recentLabel}>NOTAS CAPTADAS</Text>
+          <View style={ss.recentRow}>
+            {recentNotes.map((pc, i) => (
+              <View
+                key={`${pc}-${i}`}
+                style={[
+                  ss.recentChip,
+                  i === recentNotes.length - 1 && ss.recentChipActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    ss.recentChipTxt,
+                    i === recentNotes.length - 1 && ss.recentChipTxtActive,
+                  ]}
+                >
+                  {NOTES_BR[pc]}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {/* Tom provável (se já tem) — preview didático ANTES de confirmar */}
+      {provKey && (
+        <Animated.View style={[ss.provWrap, { opacity: provOpacity }]}>
+          <View style={ss.provBadge}>
+            <Ionicons name="musical-notes" size={12} color={C.amber} />
+            <Text style={ss.provLabel}>TOM PROVÁVEL</Text>
+          </View>
+          <Text style={ss.provKey}>
+            {provKey.noteBr} <Text style={ss.provQual}>{provKey.qualityLabel}</Text>
+          </Text>
+          <View style={ss.provConfRow}>
+            <View style={ss.provBarBg}>
+              <View style={[ss.provBarFill, { width: `${Math.min(100, confPct)}%`, backgroundColor: confColor }]} />
+            </View>
+            <Text style={[ss.provConfPct, { color: confColor }]}>{confPct}%</Text>
+          </View>
+        </Animated.View>
+      )}
 
       {/* Soft info */}
       {softInfo ? (
@@ -1021,6 +1110,125 @@ const ss = StyleSheet.create({
     fontFamily: 'Manrope_500Medium',
     fontSize: 13,
     color: C.text2,
+  },
+
+  // ── ListeningScreen: hint + recent notes + provisional preview ──────────
+  listeningHint: {
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 12,
+    color: C.text3,
+    marginTop: 6,
+    textAlign: 'center',
+    letterSpacing: 0.2,
+    paddingHorizontal: 32,
+  },
+  liveNoteLabel: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 9.5,
+    color: C.text3,
+    letterSpacing: 2.5,
+    marginBottom: 4,
+  },
+
+  recentWrap: {
+    marginTop: 16,
+    alignItems: 'center',
+    width: '100%',
+    paddingHorizontal: 24,
+  },
+  recentLabel: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 9,
+    color: C.text3,
+    letterSpacing: 2.5,
+    marginBottom: 8,
+  },
+  recentRow: {
+    flexDirection: 'row',
+    gap: 6,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  recentChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  recentChipActive: {
+    backgroundColor: 'rgba(255,176,32,0.12)',
+    borderColor: 'rgba(255,176,32,0.45)',
+  },
+  recentChipTxt: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 11,
+    color: C.text2,
+    letterSpacing: 0.5,
+  },
+  recentChipTxtActive: {
+    color: C.amber,
+  },
+
+  provWrap: {
+    marginTop: 18,
+    marginHorizontal: 24,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,176,32,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,176,32,0.22)',
+    alignItems: 'center',
+  },
+  provBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 6,
+  },
+  provLabel: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 9.5,
+    color: C.amber,
+    letterSpacing: 2.2,
+  },
+  provKey: {
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 22,
+    color: C.white,
+    letterSpacing: -0.5,
+    marginBottom: 10,
+  },
+  provQual: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 17,
+    color: C.amber,
+  },
+  provConfRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    width: '100%',
+    paddingHorizontal: 6,
+  },
+  provBarBg: {
+    flex: 1,
+    height: 4,
+    borderRadius: 99,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+  },
+  provBarFill: {
+    height: '100%',
+    borderRadius: 99,
+  },
+  provConfPct: {
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    letterSpacing: -0.3,
+    minWidth: 38,
+    textAlign: 'right',
   },
 
   // ── Confiança ao vivo ──────────────────────────────────────────────────
