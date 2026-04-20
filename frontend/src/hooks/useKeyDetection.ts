@@ -1,19 +1,42 @@
 /**
- * useKeyDetection v3 — detecção tonal com 2 camadas de confiança
+ * useKeyDetection v4 — detecção tonal com SHADOW TRACKING
  *
- * FILOSOFIA:
- * ─ Camada 1 (provisional): resposta rápida (~2s). Mostra "tom provável" com confiança real.
- *   Atualiza continuamente conforme mais dados chegam.
- * ─ Camada 2 (confirmed): após confirmação por N frames + confiança alta + variedade melódica.
- *   Uma vez confirmado, o tom só muda com evidência forte (histerese + frames consecutivos).
+ * ═══════════════════════════════════════════════════════════════════════════
+ * FILOSOFIA MUSICAL:
  *
- * O usuário vê IMEDIATAMENTE um tom provável com % de confiança, e esse número
- * sobe conforme ele continua cantando. Não há mais "silêncio informacional" de 6s.
+ * 1. RESPOSTA INICIAL RÁPIDA (~1.2s)
+ *    Ao receber 6+ amostras com 3+ notas distintas e confiança ≥ 0.50,
+ *    mostra "Tom provável" IMEDIATAMENTE — sem esperar mais.
  *
- * PROTEÇÕES:
- * ─ Notas isoladas erradas NÃO trocam o tom (filtro de dedupe + peso por duração).
- * ─ Mudança real de tom exige 10+ frames consecutivos do novo tom com confiança alta.
- * ─ Tolerância a notas fora da escala (histograma absorve ruído com decay).
+ * 2. REFINAMENTO CONTÍNUO
+ *    A confiança é recalculada a cada 300ms. O usuário vê a % subir conforme
+ *    canta mais notas da mesma tonalidade.
+ *
+ * 3. CONFIRMAÇÃO (promoção a CONFIRMED)
+ *    Após 5s + ≥ 5 notas distintas + conf ≥ 0.75 + 5 frames consecutivos
+ *    do mesmo resultado → tom PASSA A SER ESTÁVEL.
+ *
+ * 4. SHADOW TRACKING (análise OCULTA de mudança tonal)
+ *    Uma vez confirmado, notas fora da tonalidade NÃO disparam UI.
+ *    Um "candidato alternativo" é trackeado SILENCIOSAMENTE no background:
+ *      - usa janela recente (últimos 4s) para capturar mudanças
+ *      - exige 8+ frames consecutivos do novo candidato (~2.4s)
+ *      - exige margem de confiança ≥ 0.10 sobre o tom atual
+ *      - exige que a confiança do tom atual esteja caindo (< 0.65)
+ *    Só quando TODOS esses critérios são atendidos → UI mostra
+ *    "Possível mudança tonal". Nota errada isolada = descartada.
+ *
+ * 5. CONFIRMAÇÃO DE MUDANÇA
+ *    Após "Possível mudança" aparecer, precisa de +6 frames (~1.8s total) E
+ *    confiança do candidato ≥ 0.70 para COMMIT da mudança de tom.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * PESOS DO HISTOGRAMA (musicalmente informados):
+ * - Decay temporal: notas recentes pesam mais
+ * - Repetição: pitch classes frequentes ganham até +4x
+ * - Duração: log1p(runLength) — notas sustentadas valem mais (tônica usual)
+ * - Cadência: últimas 3 notas ganham boost extra (finais definem tonalidade)
+ * - Estabilidade: runs ≥ 4 frames ganham bônus
  */
 
 import { useRef, useState, useCallback, useEffect } from 'react';
@@ -23,58 +46,63 @@ import { usePitchEngine } from '../audio/usePitchEngine';
 import type { PitchEvent, PitchErrorReason } from '../audio/types';
 import { frequencyToMidi, midiToPitchClass, formatKeyDisplay } from '../utils/noteUtils';
 
-// ─── Janelas e filtros ──────────────────────────────────────────────────────
-const HISTORY_MS = 15000;          // 15s de histórico de notas
-const ANALYZE_INTERVAL_MS = 300;   // 300ms = 3.3x/s (mais responsivo)
+// ─── Janelas ───────────────────────────────────────────────────────────────
+const HISTORY_MS = 15000;
+const RECENT_WINDOW_MS = 4000;      // janela curta para shadow tracking
+const ANALYZE_INTERVAL_MS = 300;
 
+// ─── Filtros de qualidade ──────────────────────────────────────────────────
 const MIN_RMS = 0.020;
 const MIN_CLARITY = 0.88;
-const FREQ_SMOOTH_WINDOW = 7;      // mediana móvel (reduzido para resposta mais rápida)
+const FREQ_SMOOTH_WINDOW = 7;
 
-// ─── Camada 1: Provisional (rápido) ─────────────────────────────────────────
-const PROV_MIN_MS = 1800;          // 1.8s mínimo
-const PROV_MIN_SAMPLES = 10;       // 10 amostras
-const PROV_MIN_UNIQUE = 3;         // 3 notas distintas
-const PROV_MIN_CONFIDENCE = 0.45;  // confiança mínima para mostrar provisório
+// ─── Camada 1: Provisional (RÁPIDO) ────────────────────────────────────────
+const PROV_MIN_MS = 1200;           // ↓ de 1800 → 1200ms (33% mais rápido)
+const PROV_MIN_SAMPLES = 6;         // ↓ de 10 → 6 (mais rápido)
+const PROV_MIN_UNIQUE = 3;
+const PROV_MIN_CONFIDENCE = 0.50;   // ↑ um pouco (mais assertivo inicial)
 
-// ─── Camada 2: Confirmed (robusto) ──────────────────────────────────────────
-const CONF_MIN_MS = 5500;          // 5.5s mínimo
+// ─── Camada 2: Confirmed ───────────────────────────────────────────────────
+const CONF_MIN_MS = 5000;
 const CONF_MIN_UNIQUE = 5;
 const CONF_MIN_CONFIDENCE = 0.75;
-const CONF_CONFIRM_FRAMES = 5;     // 5 frames iguais (~1.5s)
+const CONF_CONFIRM_FRAMES = 5;
 
-// ─── Mudança de tom (histerese) ─────────────────────────────────────────────
-const CHANGE_SUGGEST_FRAMES = 3;   // ~1s para começar a sugerir "possível mudança"
-const CHANGE_CONFIRM_FRAMES = 10;  // ~3s para confirmar a mudança
+// ─── Shadow tracking — análise OCULTA de mudança ──────────────────────────
+// Não mostra nada ao usuário até estes critérios serem atendidos:
+const SHADOW_MIN_FRAMES = 8;        // ~2.4s de consistência silenciosa
+const SHADOW_MARGIN = 0.10;         // candidato precisa estar X% acima do atual
+const SHADOW_CURRENT_WEAKENING = 0.65; // e atual precisa estar abaixo disto
+
+// ─── Confirmação de mudança (após SHADOW sugerir) ─────────────────────────
+const CHANGE_EXTRA_CONFIRM_FRAMES = 6;
 const CHANGE_MIN_CONFIDENCE = 0.70;
 
-// ─── Pesos do histograma ────────────────────────────────────────────────────
-const HISTOGRAM_DECAY = 2.0;       // decai exponencialmente com idade
-const REPETITION_BOOST = 4.0;      // notas repetidas ganham peso
-const DURATION_BOOST = 2.5;        // runs longos (nota sustentada) ganham peso
+// ─── Pesos do histograma ───────────────────────────────────────────────────
+const HISTOGRAM_DECAY = 2.0;
+const REPETITION_BOOST = 4.0;
+const DURATION_BOOST = 2.5;
+const CADENCE_BOOST = 1.8;          // últimas 3 notas ganham peso extra
 
-// ─── UX timings ─────────────────────────────────────────────────────────────
+// ─── UX ───────────────────────────────────────────────────────────────────
 const NOTE_DISPLAY_HOLD_MS = 300;
 const SILENCE_HINT_MS = 8000;
 const SILENCE_RETRY_MS = 20000;
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Tipos
-// ═════════════════════════════════════════════════════════════════════════════
 interface NoteEvent {
   pitchClass: number;
   timestamp: number;
   rms: number;
-  runLength: number; // nº de frames consecutivos com este pitch class (para duration boost)
+  runLength: number;
 }
 
 export type DetectionState =
   | 'idle'
-  | 'listening'     // ouvindo, sem resultado ainda
-  | 'analyzing'     // coletando amostras
-  | 'provisional'   // tom provável exibido (camada 1)
-  | 'confirmed'     // tom estável (camada 2)
-  | 'change_possible'; // sugerindo mudança
+  | 'listening'
+  | 'analyzing'
+  | 'provisional'
+  | 'confirmed'
+  | 'change_possible';
 
 export type KeyTier = 'provisional' | 'confirmed' | null;
 
@@ -82,8 +110,8 @@ export interface UseKeyDetectionReturn {
   detectionState: DetectionState;
   currentKey: KeyResult | null;
   keyTier: KeyTier;
-  liveConfidence: number;     // 0..1, atualizada continuamente
-  changeSuggestion: KeyResult | null; // tom que pode substituir o atual
+  liveConfidence: number;
+  changeSuggestion: KeyResult | null;
   currentNote: number | null;
   recentNotes: number[];
   isStable: boolean;
@@ -98,9 +126,6 @@ export interface UseKeyDetectionReturn {
   reset: () => void;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Hook
-// ═════════════════════════════════════════════════════════════════════════════
 export function useKeyDetection(): UseKeyDetectionReturn {
   const [detectionState, setDetectionState] = useState<DetectionState>('idle');
   const [currentKey, setCurrentKey] = useState<KeyResult | null>(null);
@@ -116,15 +141,17 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const [errorReason, setErrorReason] = useState<PitchErrorReason | null>(null);
   const [softInfo, setSoftInfo] = useState<string | null>(null);
 
-  // ── Refs internas ──────────────────────────────────────────────────────
   const noteHistory = useRef<NoteEvent[]>([]);
   const freqBuffer = useRef<number[]>([]);
   const currentKeyRef = useRef<KeyResult | null>(null);
   const currentTierRef = useRef<KeyTier>(null);
   const changeSuggestionRef = useRef<KeyResult | null>(null);
 
-  // Counters para histerese
+  // Contadores para máquina de estados
   const confirmRef = useRef<{ root: number; quality: string; count: number } | null>(null);
+  // Shadow tracking: candidato alternativo silencioso
+  const shadowRef = useRef<{ root: number; quality: string; count: number; avgConf: number } | null>(null);
+  // Depois que o shadow "vira público", este conta frames até confirmação
   const changeRef = useRef<{ root: number; quality: string; count: number } | null>(null);
 
   const sessionStartRef = useRef<number>(0);
@@ -135,6 +162,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const lastPitchRef = useRef<number | null>(null);
   const noteDisplayRef = useRef<{ pc: number; setAt: number } | null>(null);
   const isStartingRef = useRef(false);
+  const lastRecentUpdateRef = useRef<number>(0);
 
   const engine = usePitchEngine();
   const engineRef = useRef(engine);
@@ -148,11 +176,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
 
   const isSupported = engine.isSupported;
 
-  // ── onPitch: mediana + registro com run-length ─────────────────────────
-  // Refs para throttling — evita setState excessivo no hot path
-  const lastNoteUpdateRef = useRef<number>(0);
-  const lastRecentUpdateRef = useRef<number>(0);
-
+  // ── onPitch ─────────────────────────────────────────────────────────────
   const onPitch = useCallback((e: PitchEvent) => {
     if (!isRunningRef.current) return;
     if (e.rms < MIN_RMS || e.clarity < MIN_CLARITY) return;
@@ -161,20 +185,16 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     lastValidPitchAtRef.current = now;
     silenceHintShownRef.current = false;
 
-    // Mediana móvel de frequência
     freqBuffer.current.push(e.frequency);
     if (freqBuffer.current.length > FREQ_SMOOTH_WINDOW) freqBuffer.current.shift();
     const sortedFreqs = [...freqBuffer.current].sort((a, b) => a - b);
     const medianFreq = sortedFreqs[Math.floor(sortedFreqs.length / 2)];
     const pc = midiToPitchClass(frequencyToMidi(medianFreq));
 
-    // ── Run-length tracking ──
     let runLength = 1;
     if (lastPitchRef.current === pc) {
       const last = noteHistory.current[noteHistory.current.length - 1];
-      if (last && last.pitchClass === pc) {
-        runLength = last.runLength + 1;
-      }
+      if (last && last.pitchClass === pc) runLength = last.runLength + 1;
     }
     lastPitchRef.current = pc;
 
@@ -185,14 +205,12 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       runLength,
     });
 
-    // ── THROTTLING: setCurrentNote só a cada NOTE_DISPLAY_HOLD_MS ──
     const disp = noteDisplayRef.current;
     if (!disp || now - disp.setAt >= NOTE_DISPLAY_HOLD_MS) {
       noteDisplayRef.current = { pc, setAt: now };
       setCurrentNote(pc);
     }
 
-    // ── THROTTLING: setRecentNotes no máx 5Hz (200ms) ──
     if (now - lastRecentUpdateRef.current >= 200) {
       lastRecentUpdateRef.current = now;
       const all = noteHistory.current.slice(-60).map(n => n.pitchClass);
@@ -218,7 +236,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     }
   }, []);
 
-  // ── Construção do histograma com pesos (duration + repetition + decay) ─
+  // ── Histograma com pesos musicais ───────────────────────────────────────
   const buildHistogram = useCallback((history: NoteEvent[], now: number): number[] => {
     const rawCounts = new Array(12).fill(0);
     const maxRun = new Array(12).fill(0);
@@ -227,50 +245,55 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     for (const note of history) {
       const age = (now - note.timestamp) / HISTORY_MS;
       const decay = Math.exp(-HISTOGRAM_DECAY * age);
-      // Peso base: RMS × decay × (1 + log(runLength))
-      //   → nota sustentada (run longo) ganha peso extra mas com retorno decrescente
       const durationWeight = 1.0 + Math.log1p(note.runLength) * 0.6;
       histogram[note.pitchClass] += note.rms * decay * durationWeight;
       rawCounts[note.pitchClass]++;
-      if (note.runLength > maxRun[note.pitchClass]) {
-        maxRun[note.pitchClass] = note.runLength;
-      }
+      if (note.runLength > maxRun[note.pitchClass]) maxRun[note.pitchClass] = note.runLength;
     }
 
-    // Boost de repetição (frequência relativa)
     const total = history.length || 1;
     for (let i = 0; i < 12; i++) {
       const freq = rawCounts[i] / total;
       histogram[i] *= 1.0 + freq * REPETITION_BOOST;
     }
-
-    // Boost de duração máxima (note class com run longo = forte candidato a tônica)
     for (let i = 0; i < 12; i++) {
-      if (maxRun[i] >= 3) {
+      if (maxRun[i] >= 4) {
         histogram[i] *= 1.0 + (maxRun[i] / 10) * DURATION_BOOST * 0.25;
       }
+    }
+
+    // ── Cadência: últimas ~3 notas distintas ganham peso extra ──
+    // Notas de fechamento/repouso definem tonalidade musicalmente
+    const recentUnique: number[] = [];
+    for (let i = history.length - 1; i >= 0 && recentUnique.length < 3; i--) {
+      const pc = history[i].pitchClass;
+      if (!recentUnique.includes(pc)) recentUnique.push(pc);
+    }
+    for (const pc of recentUnique) {
+      histogram[pc] *= CADENCE_BOOST;
     }
 
     return histogram;
   }, []);
 
-  // ── analyzeKey: máquina de estados 2-tier ──────────────────────────────
+  // ── analyzeKey: máquina de estados com shadow tracking ──────────────────
   const analyzeKey = useCallback(() => {
     if (!isRunningRef.current) return;
 
     const now = Date.now();
     noteHistory.current = noteHistory.current.filter(n => n.timestamp >= now - HISTORY_MS);
 
-    const history = noteHistory.current;
+    const fullHistory = noteHistory.current;
+    const recentHistory = fullHistory.filter(n => n.timestamp >= now - RECENT_WINDOW_MS);
     const elapsed = now - sessionStartRef.current;
-    const uniqueNotes = new Set(history.map(h => h.pitchClass)).size;
+    const uniqueNotes = new Set(fullHistory.map(h => h.pitchClass)).size;
     const hasKey = !!currentKeyRef.current;
     const tier = currentTierRef.current;
 
-    // ── Silence detection ────────────────────────────────────────────────
     const timeSinceLastPitch = now - lastValidPitchAtRef.current;
     const everHadPitch = lastValidPitchAtRef.current > 0;
 
+    // ── Silence ──
     if (!hasKey && everHadPitch && timeSinceLastPitch > SILENCE_RETRY_MS) {
       setStatusMessage('Sem áudio — verifique o microfone');
       setDetectionState('listening');
@@ -281,35 +304,30 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       setSoftInfo('Cante ou toque uma nota próximo ao microfone');
     }
 
-    // ── Fase 0: sem dados ─────────────────────────────────────────────────
-    if (!hasKey && history.length < 3) {
+    if (!hasKey && fullHistory.length < 3) {
       setDetectionState('listening');
       setStatusMessage('Ouvindo...');
       return;
     }
 
-    // ── Computa histograma e roda K-S ────────────────────────────────────
-    const histogram = buildHistogram(history, now);
+    const histogram = buildHistogram(fullHistory, now);
     const result = detectKeyFromHistogram(histogram);
     const conf = Math.max(0, result.confidence);
-
-    // Atualiza confiança live SEMPRE (feedback contínuo ao usuário)
     setLiveConfidence(conf);
 
     // ═════════════════════════════════════════════════════════════════════
-    // SEM TOM AINDA → tentar estabelecer PROVISIONAL rápido
+    // Sem tom ainda → tentar PROVISIONAL rápido
     // ═════════════════════════════════════════════════════════════════════
     if (!hasKey) {
       const readyForProv =
         elapsed >= PROV_MIN_MS &&
-        history.length >= PROV_MIN_SAMPLES &&
+        fullHistory.length >= PROV_MIN_SAMPLES &&
         uniqueNotes >= PROV_MIN_UNIQUE &&
         conf >= PROV_MIN_CONFIDENCE;
 
       if (!readyForProv) {
         setDetectionState('analyzing');
-        // Mensagens progressivas
-        if (history.length < PROV_MIN_SAMPLES) {
+        if (fullHistory.length < PROV_MIN_SAMPLES) {
           setStatusMessage('Ouvindo...');
         } else if (uniqueNotes < PROV_MIN_UNIQUE) {
           setStatusMessage(`Analisando tonalidade... (${uniqueNotes}/${PROV_MIN_UNIQUE} notas)`);
@@ -320,7 +338,6 @@ export function useKeyDetection(): UseKeyDetectionReturn {
         return;
       }
 
-      // ── PROVISIONAL key definido ─────────────────────────────────────
       currentKeyRef.current = { ...result };
       currentTierRef.current = 'provisional';
       confirmRef.current = { root: result.root, quality: result.quality, count: 1 };
@@ -334,158 +351,211 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     }
 
     // ═════════════════════════════════════════════════════════════════════
-    // JÁ TEM TOM → refinamento / confirmação / mudança
+    // JÁ TEM TOM → refinamento / shadow tracking / confirmação
     // ═════════════════════════════════════════════════════════════════════
     const cur = currentKeyRef.current!;
-    const isSameAsCurrent =
-      cur.root === result.root && cur.quality === result.quality;
+    const isSameAsCurrent = cur.root === result.root && cur.quality === result.quality;
 
-    // Atualizar confiança do currentKey (para exibição)
     currentKeyRef.current = { ...cur, confidence: conf };
     setCurrentKey({ ...cur, confidence: conf });
 
-    // ── Mesmo tom: confirmar ou manter ─────────────────────────────────
+    // ── Provisional: troca mais fácil (ainda não estava firme) ──
+    // Usa lógica simples de 3 frames
+    if (tier === 'provisional') {
+      if (isSameAsCurrent) {
+        const cr = confirmRef.current;
+        if (!cr || cr.root !== cur.root || cr.quality !== cur.quality) {
+          confirmRef.current = { root: cur.root, quality: cur.quality, count: 1 };
+        } else {
+          cr.count++;
+        }
+
+        // Promover para CONFIRMED
+        if (
+          elapsed >= CONF_MIN_MS &&
+          uniqueNotes >= CONF_MIN_UNIQUE &&
+          conf >= CONF_MIN_CONFIDENCE &&
+          confirmRef.current!.count >= CONF_CONFIRM_FRAMES
+        ) {
+          currentTierRef.current = 'confirmed';
+          setKeyTier('confirmed');
+          setDetectionState('confirmed');
+          setIsStable(true);
+          setStatusMessage('Estável no tom atual');
+          shadowRef.current = null; // reset shadow
+          return;
+        }
+
+        setDetectionState('provisional');
+        const pct = Math.round(conf * 100);
+        const { noteBr, qualityLabel } = formatKeyDisplay(cur.root, cur.quality as 'major' | 'minor');
+        setStatusMessage(`Refinando: ${noteBr} ${qualityLabel} (${pct}%)`);
+        return;
+      } else {
+        // Em provisional, se detectou OUTRO tom com conf razoável 3x → troca
+        const ch = changeRef.current;
+        if (!ch || ch.root !== result.root || ch.quality !== result.quality) {
+          changeRef.current = { root: result.root, quality: result.quality, count: 1 };
+        } else {
+          ch.count++;
+        }
+        if (changeRef.current!.count >= 3 && conf >= PROV_MIN_CONFIDENCE) {
+          currentKeyRef.current = { ...result };
+          confirmRef.current = { root: result.root, quality: result.quality, count: 1 };
+          changeRef.current = null;
+          setCurrentKey({ ...result });
+          setDetectionState('provisional');
+          const { noteBr, qualityLabel } = formatKeyDisplay(result.root, result.quality as 'major' | 'minor');
+          setStatusMessage(`Tom provável: ${noteBr} ${qualityLabel}`);
+          return;
+        }
+        setDetectionState('provisional');
+        const pct = Math.round(conf * 100);
+        const { noteBr, qualityLabel } = formatKeyDisplay(cur.root, cur.quality as 'major' | 'minor');
+        setStatusMessage(`Refinando: ${noteBr} ${qualityLabel} (${pct}%)`);
+        return;
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // TIER === 'confirmed' → SHADOW TRACKING OCULTO
+    // ═════════════════════════════════════════════════════════════════════
     if (isSameAsCurrent) {
-      // Limpa sugestão de mudança
+      // Tom atual se reforça → reset shadow + change suggestion
+      shadowRef.current = null;
       if (changeSuggestionRef.current) {
         changeSuggestionRef.current = null;
         setChangeSuggestion(null);
       }
       changeRef.current = null;
+      setDetectionState('confirmed');
+      setIsStable(true);
+      setStatusMessage('Estável no tom atual');
+      return;
+    }
 
-      const cr = confirmRef.current;
-      if (!cr || cr.root !== cur.root || cr.quality !== cur.quality) {
-        confirmRef.current = { root: cur.root, quality: cur.quality, count: 1 };
+    // ── Análise oculta: usar JANELA RECENTE (4s) para capturar mudanças ──
+    let candidateKey = result;
+    if (recentHistory.length >= 6) {
+      const recentHist = buildHistogram(recentHistory, now);
+      const recentResult = detectKeyFromHistogram(recentHist);
+      if (recentResult.confidence > 0.50) {
+        candidateKey = recentResult;
+      }
+    }
+    const candidateSameAsCurrent =
+      candidateKey.root === cur.root && candidateKey.quality === cur.quality;
+
+    if (candidateSameAsCurrent) {
+      // Candidato recente = tom atual → reset shadow
+      shadowRef.current = null;
+      if (changeSuggestionRef.current) {
+        changeSuggestionRef.current = null;
+        setChangeSuggestion(null);
+      }
+      changeRef.current = null;
+      setDetectionState('confirmed');
+      setIsStable(true);
+      setStatusMessage('Estável no tom atual');
+      return;
+    }
+
+    // ── SHADOW: candidato diferente — trackear silenciosamente ──
+    const sh = shadowRef.current;
+    const candConf = Math.max(0, candidateKey.confidence);
+    if (!sh || sh.root !== candidateKey.root || sh.quality !== candidateKey.quality) {
+      shadowRef.current = {
+        root: candidateKey.root,
+        quality: candidateKey.quality,
+        count: 1,
+        avgConf: candConf,
+      };
+      // Não mostra nada — só continua
+      setDetectionState('confirmed');
+      setIsStable(true);
+      setStatusMessage('Estável no tom atual');
+      return;
+    }
+
+    // Incrementa shadow + atualiza média móvel de confiança
+    sh.count++;
+    sh.avgConf = sh.avgConf * 0.7 + candConf * 0.3;
+
+    // ── Critérios para EXPOR o shadow ao usuário ──
+    const currentWeakening = conf < SHADOW_CURRENT_WEAKENING;
+    const marginOk = sh.avgConf >= conf + SHADOW_MARGIN;
+    const framesOk = sh.count >= SHADOW_MIN_FRAMES;
+
+    if (!framesOk || !marginOk || !currentWeakening) {
+      // Ainda não é forte o suficiente — NADA visível ao usuário
+      setDetectionState('confirmed');
+      setIsStable(true);
+      setStatusMessage('Estável no tom atual');
+      return;
+    }
+
+    // ── SHADOW ESTÁ MADURO: mostrar "Possível mudança" ──
+    if (
+      !changeSuggestionRef.current ||
+      changeSuggestionRef.current.root !== candidateKey.root ||
+      changeSuggestionRef.current.quality !== candidateKey.quality
+    ) {
+      changeSuggestionRef.current = { ...candidateKey };
+      setChangeSuggestion({ ...candidateKey });
+      changeRef.current = { root: candidateKey.root, quality: candidateKey.quality, count: 1 };
+    } else {
+      const cr = changeRef.current;
+      if (!cr || cr.root !== candidateKey.root || cr.quality !== candidateKey.quality) {
+        changeRef.current = { root: candidateKey.root, quality: candidateKey.quality, count: 1 };
       } else {
         cr.count++;
       }
-
-      // Promover PROVISIONAL → CONFIRMED se critérios forem atingidos
-      if (
-        tier === 'provisional' &&
-        elapsed >= CONF_MIN_MS &&
-        uniqueNotes >= CONF_MIN_UNIQUE &&
-        conf >= CONF_MIN_CONFIDENCE &&
-        confirmRef.current!.count >= CONF_CONFIRM_FRAMES
-      ) {
-        currentTierRef.current = 'confirmed';
-        setKeyTier('confirmed');
-        setDetectionState('confirmed');
-        setIsStable(true);
-        setStatusMessage('Estável no tom atual');
-      } else if (tier === 'confirmed') {
-        setDetectionState('confirmed');
-        setIsStable(true);
-        setStatusMessage('Estável no tom atual');
-      } else {
-        // ainda provisional — refinando
-        setDetectionState('provisional');
-        setIsStable(false);
-        const pct = Math.round(conf * 100);
-        const { noteBr, qualityLabel } = formatKeyDisplay(cur.root, cur.quality as 'major' | 'minor');
-        setStatusMessage(`Refinando: ${noteBr} ${qualityLabel} (${pct}%)`);
-      }
-      return;
     }
 
-    // ── Tom diferente detectado ───────────────────────────────────────
-    //   Provisional: troca mais fácil (ainda não estava firme)
-    //   Confirmed:   exige histerese forte
-    const needsStrongChange = tier === 'confirmed';
+    const cr2 = changeRef.current!;
 
-    const ch = changeRef.current;
-    if (!ch || ch.root !== result.root || ch.quality !== result.quality) {
-      // Primeiro frame do novo tom candidato
-      changeRef.current = { root: result.root, quality: result.quality, count: 1 };
-    } else {
-      ch.count++;
-    }
-
-    const changeCount = changeRef.current!.count;
-
-    if (!needsStrongChange) {
-      // ── Provisional: troca com 3 frames consistentes + conf razoável ──
-      if (changeCount >= CHANGE_SUGGEST_FRAMES && conf >= PROV_MIN_CONFIDENCE) {
-        currentKeyRef.current = { ...result };
-        setCurrentKey({ ...result });
-        confirmRef.current = { root: result.root, quality: result.quality, count: 1 };
-        changeRef.current = null;
-        setChangeSuggestion(null);
-        changeSuggestionRef.current = null;
-        setDetectionState('provisional');
-        setIsStable(false);
-        const { noteBr, qualityLabel } = formatKeyDisplay(result.root, result.quality as 'major' | 'minor');
-        setStatusMessage(`Tom provável: ${noteBr} ${qualityLabel}`);
-        return;
-      }
-      // Ainda coletando evidência — mantém o provisório atual
-      setDetectionState('provisional');
-      const pct = Math.round(conf * 100);
-      const { noteBr, qualityLabel } = formatKeyDisplay(cur.root, cur.quality as 'major' | 'minor');
-      setStatusMessage(`Refinando: ${noteBr} ${qualityLabel} (${pct}%)`);
-      return;
-    }
-
-    // ── CONFIRMED: mudança requer histerese forte ──────────────────────
-    if (changeCount >= CHANGE_SUGGEST_FRAMES && changeCount < CHANGE_CONFIRM_FRAMES) {
-      // Mostrar sugestão de mudança
-      if (
-        !changeSuggestionRef.current ||
-        changeSuggestionRef.current.root !== result.root ||
-        changeSuggestionRef.current.quality !== result.quality
-      ) {
-        const suggestion = { ...result };
-        changeSuggestionRef.current = suggestion;
-        setChangeSuggestion(suggestion);
-      }
-      setDetectionState('change_possible');
-      setIsStable(false);
-      const { noteBr, qualityLabel } = formatKeyDisplay(result.root, result.quality as 'major' | 'minor');
-      setStatusMessage(`Possível mudança: ${noteBr} ${qualityLabel}... (${changeCount}/${CHANGE_CONFIRM_FRAMES})`);
-      return;
-    }
-
-    if (changeCount >= CHANGE_CONFIRM_FRAMES && conf >= CHANGE_MIN_CONFIDENCE) {
-      // ── MUDANÇA CONFIRMADA ────────────────────────────────────────
-      currentKeyRef.current = { ...result };
+    // ── Confirmar mudança? ──
+    if (cr2.count >= CHANGE_EXTRA_CONFIRM_FRAMES && sh.avgConf >= CHANGE_MIN_CONFIDENCE) {
+      // COMMIT
+      currentKeyRef.current = { ...candidateKey };
       currentTierRef.current = 'confirmed';
-      confirmRef.current = { root: result.root, quality: result.quality, count: 1 };
+      confirmRef.current = { root: candidateKey.root, quality: candidateKey.quality, count: 1 };
+      shadowRef.current = null;
       changeRef.current = null;
       changeSuggestionRef.current = null;
-      setCurrentKey({ ...result });
-      setKeyTier('confirmed');
+      setCurrentKey({ ...candidateKey });
       setChangeSuggestion(null);
       setDetectionState('confirmed');
-      setIsStable(false); // breve flash, próximo tick volta a true
-      const { noteBr, qualityLabel } = formatKeyDisplay(result.root, result.quality as 'major' | 'minor');
+      setIsStable(false);
+      const { noteBr, qualityLabel } = formatKeyDisplay(candidateKey.root, candidateKey.quality as 'major' | 'minor');
       setStatusMessage(`Tom alterado para ${noteBr} ${qualityLabel}`);
-
-      // Re-estabilizar após 1.5s
       setTimeout(() => {
-        if (isRunningRef.current && currentKeyRef.current?.root === result.root) {
+        if (isRunningRef.current && currentKeyRef.current?.root === candidateKey.root) {
           setIsStable(true);
           setStatusMessage('Estável no tom atual');
         }
-      }, 1500);
+      }, 1800);
       return;
     }
+
+    // Ainda aguardando confirmação final
+    setDetectionState('change_possible');
+    setIsStable(false);
+    const { noteBr, qualityLabel } = formatKeyDisplay(candidateKey.root, candidateKey.quality as 'major' | 'minor');
+    const totalNeeded = SHADOW_MIN_FRAMES + CHANGE_EXTRA_CONFIRM_FRAMES;
+    const progress = Math.min(totalNeeded, sh.count + cr2.count);
+    setStatusMessage(`Possível mudança tonal: ${noteBr} ${qualityLabel}... (${progress}/${totalNeeded})`);
   }, [buildHistogram]);
 
-  // ── start ───────────────────────────────────────────────────────────
+  // ── start ──────────────────────────────────────────────────────────────
   const start = useCallback(async (): Promise<boolean> => {
-    if (isStartingRef.current) {
-      console.warn('[KeyDetection][START] chamada duplicada ignorada');
-      return false;
-    }
-
+    if (isStartingRef.current) return false;
     isStartingRef.current = true;
-
     try {
       setErrorMessage(null);
       setErrorReason(null);
       setSoftInfo(null);
 
-      // Parar sessão anterior com AWAIT (protege contra "Recording in progress")
       if (isRunningRef.current) {
         isRunningRef.current = false;
         if (intervalRef.current) {
@@ -497,7 +567,6 @@ export function useKeyDetection(): UseKeyDetectionReturn {
         await engineRef.current?.stop();
       }
 
-      // Reset completo
       noteHistory.current = [];
       freqBuffer.current = [];
       currentKeyRef.current = null;
@@ -505,6 +574,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       changeSuggestionRef.current = null;
       confirmRef.current = null;
       changeRef.current = null;
+      shadowRef.current = null;
       lastPitchRef.current = null;
       noteDisplayRef.current = null;
       lastValidPitchAtRef.current = 0;
@@ -524,14 +594,12 @@ export function useKeyDetection(): UseKeyDetectionReturn {
 
       const eng = engineRef.current;
       const ok = await eng.start(onPitch, onEngineError);
-
       if (!ok) {
         isRunningRef.current = false;
         setIsRunning(false);
         setDetectionState('idle');
         return false;
       }
-
       intervalRef.current = setInterval(analyzeKey, ANALYZE_INTERVAL_MS);
       return true;
     } finally {
@@ -539,7 +607,6 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     }
   }, [analyzeKey, onPitch, onEngineError]);
 
-  // ── stop ───────────────────────────────────────────────────────────
   const stop = useCallback(() => {
     isRunningRef.current = false;
     setIsRunning(false);
