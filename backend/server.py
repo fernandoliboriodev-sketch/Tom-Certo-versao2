@@ -352,12 +352,28 @@ async def admin_list_tokens(
         ]
 
     docs = await tokens_col.find(find_filter).sort("created_at", -1).to_list(500)
+
+    # Batch-expire tokens whose expires_at has passed (single bulk update)
+    now = now_utc()
+    expired_ids = [
+        d["_id"] for d in docs
+        if d.get("status") == "active"
+        and d.get("expires_at")
+        and d["expires_at"] <= now
+    ]
+    if expired_ids:
+        await tokens_col.update_many(
+            {"_id": {"$in": expired_ids}},
+            {"$set": {"status": "expired"}},
+        )
+        # Reflect in-memory
+        for d in docs:
+            if d["_id"] in expired_ids:
+                d["status"] = "expired"
+
     out = []
     for d in docs:
         eff = compute_effective_status(d)
-        if eff == "expired" and d.get("status") == "active":
-            await tokens_col.update_one({"_id": d["_id"]}, {"$set": {"status": "expired"}})
-            d["status"] = "expired"
         if status and eff != status:
             continue
         item = serialize_token(d)
