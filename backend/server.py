@@ -22,8 +22,19 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
+# Prioriza variáveis de ambiente (Railway/Atlas/produção).
+# Em dev, vêm do /app/backend/.env via load_dotenv acima.
+MONGO_URL = os.environ.get("MONGO_URL")
+if not MONGO_URL:
+    raise RuntimeError(
+        "MONGO_URL não configurado. Defina a variável de ambiente com a connection "
+        "string do MongoDB Atlas (ex.: mongodb+srv://user:pass@cluster.xxx.mongodb.net/)."
+    )
+
+# DB_NAME opcional: se a connection string já incluir o nome do banco, será usado.
+# Caso contrário, usamos o valor de DB_NAME (fallback 'tom_certo_db').
+DB_NAME = os.environ.get("DB_NAME", "tom_certo_db")
+
 JWT_SECRET = os.environ.get("JWT_SECRET", "tom-certo-dev-secret-change-in-prod")
 JWT_ALG = "HS256"
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
@@ -32,7 +43,13 @@ ADMIN_PASSWORD_PLAIN = os.environ.get("ADMIN_PASSWORD", "admin123")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 ADMIN_PASSWORD_HASH = pwd_context.hash(ADMIN_PASSWORD_PLAIN)
 
-client = AsyncIOMotorClient(MONGO_URL)
+# Motor com timeouts sensatos para detectar problemas de conexão cedo
+client = AsyncIOMotorClient(
+    MONGO_URL,
+    serverSelectionTimeoutMS=10000,  # 10s para selecionar servidor
+    connectTimeoutMS=10000,
+    retryWrites=True,
+)
 db = client[DB_NAME]
 tokens_col = db["tokens"]
 
@@ -479,10 +496,19 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
+    # ── Validar conexão com MongoDB ANTES de atender requisições ──
+    try:
+        await client.admin.command("ping")
+        logger.info("✓ MongoDB conectado em %s", DB_NAME)
+    except Exception as e:
+        logger.error("✗ Falha ao conectar no MongoDB: %s", e)
+        raise
+
+    # ── Índices ──────────────────────────────────────────────────
     await tokens_col.create_index("token", unique=True)
     await tokens_col.create_index("id", unique=True)
     await tokens_col.create_index("status")
-    logger.info("Tom Certo API ready. Admin user: %s", ADMIN_USERNAME)
+    logger.info("Tom Certo API pronta. Admin user: %s", ADMIN_USERNAME)
 
     # Seed test token for dev/preview environment (upsert: only creates if missing)
     import uuid
@@ -506,6 +532,19 @@ async def on_startup():
         logger.info("Seed token TEST-DEV2026 criado.")
 
 
+# ─── Health check routes (usadas por Railway / load balancers) ──────────────
+@app.get("/health")
+async def health_root():
+    """Health check público (sem prefixo /api) — usado pelo Railway."""
+    try:
+        await client.admin.command("ping")
+        return {"status": "OK", "db": "connected"}
+    except Exception as e:
+        logger.warning("Health check: DB unreachable: %s", e)
+        return {"status": "OK", "db": "disconnected"}
+
+
 @app.on_event("shutdown")
 async def on_shutdown():
     client.close()
+    logger.info("MongoDB client fechado.")
