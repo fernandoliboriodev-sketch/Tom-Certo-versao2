@@ -80,3 +80,16 @@ memory/test_credentials.md
 
 # Mobile development
 android-sdk/
+
+# Expo/EAS
+.expo/
+.expo-shared/
+*.apk
+*.aab
+.metro-cache/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
