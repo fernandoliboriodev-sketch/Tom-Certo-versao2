@@ -216,26 +216,26 @@ function InitialScreen({
 
   return (
     <Animated.View style={[styles.initialContainer, { opacity: fade, transform: [{ translateY: slide }] }]}>
-      {/* Header */}
-      <View style={styles.initialHeader}>
+      {/* Brand: logo sempre acima do nome */}
+      <View style={styles.initialBrandBlock}>
+        {/* Logo / Mic area */}
+        <View style={styles.initialLogoArea}>
+          <View style={styles.ringOuter} />
+          <View style={styles.ringMid} />
+          {renderWave(wave3)}
+          {renderWave(wave2)}
+          {renderWave(wave1)}
+          <Animated.View style={[styles.micCircleSimple, { transform: [{ scale: micScale }] }]}>
+            <Image
+              source={require('../assets/images/icon.png')}
+              style={styles.brandLogoLarge}
+              resizeMode="contain"
+            />
+          </Animated.View>
+        </View>
+        {/* Texto sempre abaixo da logo */}
         <Text style={styles.initialAppName}>Tom Certo</Text>
         <Text style={styles.initialTagline}>Detector de tonalidade</Text>
-      </View>
-
-      {/* Logo / Mic area */}
-      <View style={styles.initialLogoArea}>
-        <View style={styles.ringOuter} />
-        <View style={styles.ringMid} />
-        {renderWave(wave3)}
-        {renderWave(wave2)}
-        {renderWave(wave1)}
-        <Animated.View style={[styles.micCircleSimple, { transform: [{ scale: micScale }] }]}>
-          <Image
-            source={require('../assets/images/icon.png')}
-            style={styles.brandLogoLarge}
-            resizeMode="contain"
-          />
-        </Animated.View>
       </View>
 
       {/* Instructions */}
@@ -700,6 +700,7 @@ const styles = StyleSheet.create({
     fontSize: 32,
     color: C.white,
     letterSpacing: -0.8,
+    marginTop: 8,
   },
   initialTagline: {
     fontFamily: 'Manrope_500Medium',
@@ -709,11 +710,17 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     textTransform: 'uppercase',
   },
-  initialLogoArea: {
+  // Brand block: logo + nome sempre juntos e centralizados
+  initialBrandBlock: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginVertical: 8,
+  },
+  initialLogoArea: {
+    width: 220,
+    height: 220,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   ringOuter: {
     position: 'absolute',
