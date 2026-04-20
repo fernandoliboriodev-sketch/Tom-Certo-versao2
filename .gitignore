@@ -92,4 +92,12 @@ android-sdk/
 .env
 .env.local
 .env.*.local
-!.env.example
+!.env.example-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
