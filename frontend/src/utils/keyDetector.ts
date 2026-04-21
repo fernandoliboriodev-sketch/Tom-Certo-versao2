@@ -96,6 +96,39 @@ export interface KeyResult {
   };
 }
 
+export interface KeyScoreEntry {
+  root: number;
+  quality: 'major' | 'minor';
+  score: number;
+}
+
+/**
+ * Computa scores para TODOS os 24 candidatos (12 maj + 12 min).
+ * Usado pelo acumulador bayesiano no hook.
+ */
+export function scoreAllKeys(hist: number[]): KeyScoreEntry[] {
+  const out: KeyScoreEntry[] = [];
+  for (let r = 0; r < 12; r++) {
+    const majProfile = rotate(KK_MAJOR, r);
+    const minProfile = rotate(KK_MINOR, r);
+    const pM = Math.max(0, pearson(hist, majProfile));
+    const pN = Math.max(0, pearson(hist, minProfile));
+    const sM = signatureFit(hist, r, 'major');
+    const sN = signatureFit(hist, r, 'minor');
+    const tb = thirdBalance(hist, r);
+    const te = tonicEvidence(hist, r);
+    const ltM = leadingToneEvidence(hist, r, 'major');
+    const ltN = leadingToneEvidence(hist, r, 'minor');
+    const majThird = Math.max(0, tb);
+    const minThird = Math.max(0, -tb);
+    const sMaj = 0.35 * pM + 0.25 * sM + 0.20 * majThird + 0.10 * te + 0.10 * ltM;
+    const sMin = 0.35 * pN + 0.25 * sN + 0.20 * minThird + 0.10 * te + 0.10 * ltN;
+    out.push({ root: r, quality: 'major', score: sMaj });
+    out.push({ root: r, quality: 'minor', score: sMin });
+  }
+  return out;
+}
+
 /**
  * Detecta tom a partir de um histograma ponderado por duração/clarity (não contagem).
  * 

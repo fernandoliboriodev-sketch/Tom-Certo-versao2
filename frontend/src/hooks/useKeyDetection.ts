@@ -41,7 +41,7 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import { detectKeyFromHistogram, KeyResult } from '../utils/keyDetector';
+import { detectKeyFromHistogram, scoreAllKeys, KeyResult } from '../utils/keyDetector';
 import { usePitchEngine } from '../audio/usePitchEngine';
 import type { PitchEvent, PitchErrorReason } from '../audio/types';
 import { frequencyToMidi, midiToPitchClass, formatKeyDisplay } from '../utils/noteUtils';
@@ -217,6 +217,13 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const pcBuffer = useRef<{ pc: number; clarity: number; midi: number }[]>([]);
   // Contador de frames consecutivos do mesmo pc candidato (anti-transiente)
   const pcCandidateRef = useRef<{ pc: number; count: number } | null>(null);
+
+  // ═══ ACUMULADOR BAYESIANO DE TOM ═══
+  // Array de 24 scores (12 maj + 12 min). Cada cycle do analyzeKey faz EMA:
+  // acc[i] = α × acc[i] + (1-α) × novo_score[i]
+  // Com α = 0.90, um único cycle influencia só 10% → oscilações se dissolvem.
+  const keyScoresAccRef = useRef<number[]>(new Array(24).fill(0));
+  const keyScoresCyclesRef = useRef<number>(0); // quantos cycles já acumulados
 
   const engine = usePitchEngine();
   const engineRef = useRef(engine);
@@ -455,8 +462,31 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     }
 
     const histogram = buildHistogram(fullHistory, now);
-    const result = detectKeyFromHistogram(histogram);
-    const conf = Math.max(0, result.confidence);
+
+    // ═══ ACUMULADOR BAYESIANO ═══
+    // Computa scores de TODOS os 24 tons candidatos neste cycle
+    const allScores = scoreAllKeys(histogram);
+    // EMA com α=0.90 → grande memória, 10% de peso no cycle atual
+    // Resultado: oscilações entre cycles se dissolvem em ~5-6 cycles (1.5s)
+    const alpha = 0.90;
+    const acc = keyScoresAccRef.current;
+    for (let i = 0; i < 24; i++) {
+      acc[i] = acc[i] * alpha + Math.max(0, allScores[i].score) * (1 - alpha);
+    }
+    keyScoresCyclesRef.current += 1;
+
+    // Encontra o melhor e o 2º melhor NO ACUMULADOR (não no cycle atual)
+    let bestIdx = 0, secondBestIdx = 0;
+    for (let i = 1; i < 24; i++) {
+      if (acc[i] > acc[bestIdx]) { secondBestIdx = bestIdx; bestIdx = i; }
+      else if (acc[i] > acc[secondBestIdx]) secondBestIdx = i;
+    }
+    const best = allScores[bestIdx];
+    const gap = acc[bestIdx] - acc[secondBestIdx];
+
+    // Resultado "suavizado" — é o best acumulado
+    const result: KeyResult = { root: best.root, quality: best.quality, confidence: acc[bestIdx] };
+    const conf = Math.max(0, acc[bestIdx]);
     setLiveConfidence(conf);
 
     // ═════════════════════════════════════════════════════════════════════
@@ -726,6 +756,9 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       audioLevelRef.current = 0;
       setAudioLevel(0);
       noteDisplayRef.current = null;
+      // Reset do acumulador bayesiano (nova sessão começa do zero)
+      keyScoresAccRef.current = new Array(24).fill(0);
+      keyScoresCyclesRef.current = 0;
       lastValidPitchAtRef.current = 0;
       silenceHintShownRef.current = false;
       sessionStartRef.current = Date.now();

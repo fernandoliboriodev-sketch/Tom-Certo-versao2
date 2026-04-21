@@ -1,434 +1,353 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Animated,
-  Dimensions,
-  Easing,
-  Platform,
-  Image,
-  Modal,
-  ScrollView,
-  Linking,
+  View, Text, StyleSheet, TouchableOpacity, Animated, Dimensions,
+  Easing, Platform, Image, Modal, ScrollView, Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useKeyDetection } from '../src/hooks/useKeyDetection';
-import {
-  NOTES_BR,
-  NOTES_INTL,
-  formatKeyDisplay,
-  getHarmonicField,
-} from '../src/utils/noteUtils';
+import { NOTES_BR, NOTES_INTL, formatKeyDisplay, getHarmonicField } from '../src/utils/noteUtils';
 import { useAuth } from '../src/auth/AuthContext';
 import AudioVisualizer from '../src/components/AudioVisualizer';
 
 const { width: SW, height: SH } = Dimensions.get('window');
 
 const C = {
-  bg: '#000000',
-  surface: '#0E0E0E',
-  surface2: '#141414',
-  border: '#1C1C1C',
-  borderStrong: '#2A2A2A',
-  amber: '#FFB020',
-  amberGlow: 'rgba(255,176,32,0.38)',
-  amberMuted: 'rgba(255,176,32,0.10)',
-  amberBorder: 'rgba(255,176,32,0.28)',
-  white: '#FFFFFF',
-  text2: '#A0A0A0',
-  text3: '#555555',
-  red: '#EF4444',
-  redMuted: 'rgba(239,68,68,0.12)',
-  green: '#22C55E',
-  greenMuted: 'rgba(34,197,94,0.10)',
-  greenBorder: 'rgba(34,197,94,0.35)',
-  blue: '#60A5FA',
+  bg: '#000000', surface: '#0E0E0E', surface2: '#141414',
+  border: '#1C1C1C', borderStrong: '#2A2A2A',
+  amber: '#FFB020', amberGlow: 'rgba(255,176,32,0.38)',
+  amberMuted: 'rgba(255,176,32,0.10)', amberBorder: 'rgba(255,176,32,0.28)',
+  white: '#FFFFFF', text2: '#A0A0A0', text3: '#555555',
+  red: '#EF4444', redMuted: 'rgba(239,68,68,0.12)',
+  green: '#22C55E', blue: '#60A5FA',
 };
 
-// ═════════════════════════════════════════════════════════════════════════
-// ROOT
-// ═════════════════════════════════════════════════════════════════════════
 export default function HomeScreen() {
   const det = useKeyDetection();
-  const { appMode, errorMessage } = det;
-
+  const screen: 'initial' | 'active' = det.isRunning ? 'active' : 'initial';
   return (
     <SafeAreaView style={ss.safe} edges={['top', 'bottom']}>
-      {appMode === 'idle' && <IdleScreen det={det} />}
-      {appMode === 'analyzing' && <AnalyzingScreen det={det} />}
-      {appMode === 'result' && <ResultScreen det={det} />}
-      {appMode === 'monitoring' && <MonitoringScreen det={det} />}
+      {screen === 'initial'
+        ? <InitialScreen onStart={det.start} errorMessage={det.errorMessage} errorReason={det.errorReason} />
+        : <ActiveScreen det={det} />
+      }
     </SafeAreaView>
   );
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// IDLE — tela inicial grande "Começar análise"
+// INITIAL
 // ═════════════════════════════════════════════════════════════════════════
-function IdleScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
+function InitialScreen({
+  onStart, errorMessage, errorReason,
+}: {
+  onStart: () => void;
+  errorMessage: string | null;
+  errorReason: 'permission_denied' | 'permission_blocked' | 'platform_limit' | 'unknown' | null;
+}) {
   const { logout, session } = useAuth();
   const [modalVisible, setModalVisible] = useState(false);
   const prevErr = useRef<string | null>(null);
   useEffect(() => {
-    if (det.errorMessage && det.errorMessage !== prevErr.current) setModalVisible(true);
-    prevErr.current = det.errorMessage;
-  }, [det.errorMessage]);
+    if (errorMessage && errorMessage !== prevErr.current) setModalVisible(true);
+    prevErr.current = errorMessage;
+  }, [errorMessage]);
 
   const fadeIn = useRef(new Animated.Value(0)).current;
+  const slideUp = useRef(new Animated.Value(30)).current;
   const logoGlow = useRef(new Animated.Value(0.6)).current;
-  const micScale = useRef(new Animated.Value(1)).current;
   const ring1 = useRef(new Animated.Value(0)).current;
   const ring2 = useRef(new Animated.Value(0)).current;
   const ring3 = useRef(new Animated.Value(0)).current;
+  const micScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    Animated.timing(fadeIn, { toValue: 1, duration: 300, useNativeDriver: true }).start();
-
-    const logoLoop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(logoGlow, { toValue: 1, duration: 2200, useNativeDriver: true }),
-        Animated.timing(logoGlow, { toValue: 0.6, duration: 2200, useNativeDriver: true }),
-      ])
-    );
+    Animated.parallel([
+      Animated.timing(fadeIn, { toValue: 1, duration: 280, useNativeDriver: true }),
+      Animated.timing(slideUp, { toValue: 0, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+    ]).start();
+    const logoLoop = Animated.loop(Animated.sequence([
+      Animated.timing(logoGlow, { toValue: 1, duration: 2000, useNativeDriver: true }),
+      Animated.timing(logoGlow, { toValue: 0.6, duration: 2000, useNativeDriver: true }),
+    ]));
     logoLoop.start();
-
     const makeRing = (val: Animated.Value, delay: number) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(val, { toValue: 1, duration: 2200, easing: Easing.out(Easing.ease), useNativeDriver: true }),
-          Animated.timing(val, { toValue: 0, duration: 0, useNativeDriver: true }),
-        ])
-      );
-    const r1 = makeRing(ring1, 0);
-    const r2 = makeRing(ring2, 700);
-    const r3 = makeRing(ring3, 1400);
+      Animated.loop(Animated.sequence([
+        Animated.delay(delay),
+        Animated.timing(val, { toValue: 1, duration: 2200, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+        Animated.timing(val, { toValue: 0, duration: 0, useNativeDriver: true }),
+      ]));
+    const r1 = makeRing(ring1, 0), r2 = makeRing(ring2, 700), r3 = makeRing(ring3, 1400);
     r1.start(); r2.start(); r3.start();
     return () => { logoLoop.stop(); r1.stop(); r2.stop(); r3.stop(); };
   }, []);
 
   const renderRing = (val: Animated.Value) => (
-    <Animated.View
-      style={[ss.micRing, {
-        opacity: val.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 0.55, 0] }),
-        transform: [{ scale: val.interpolate({ inputRange: [0, 1], outputRange: [1, 2.8] }) }],
-      }]}
-    />
+    <Animated.View style={[ss.micRing, {
+      opacity: val.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 0.55, 0] }),
+      transform: [{ scale: val.interpolate({ inputRange: [0, 1], outputRange: [1, 2.8] }) }],
+    }]} />
   );
 
-  const handleStart = () => {
-    Animated.sequence([
-      Animated.timing(micScale, { toValue: 0.92, duration: 80, useNativeDriver: true }),
-      Animated.spring(micScale, { toValue: 1, useNativeDriver: true }),
-    ]).start();
-    det.startAnalysis();
-  };
-
   return (
-    <Animated.View style={[ss.idleRoot, { opacity: fadeIn }]}>
-      <View style={ss.idleLogoRow}>
-        <Animated.Image
-          source={require('../assets/images/logo-full.png')}
-          style={[ss.idleLogo, { opacity: logoGlow }]}
-          resizeMode="contain"
-        />
+    <Animated.View style={[ss.initialRoot, { opacity: fadeIn, transform: [{ translateY: slideUp }] }]}>
+      <View style={ss.brandBlock}>
+        <Animated.Image source={require('../assets/images/logo-full.png')} style={[ss.logoClean, { opacity: logoGlow }]} resizeMode="contain" />
       </View>
 
-      <Text style={ss.idleTitle}>Toque para iniciar</Text>
-      <Text style={ss.idleSubtitle}>
-        Cante ou toque por {Math.ceil(15)} segundos.{'\n'}
-        O app identifica o tom da música.
-      </Text>
-
-      <View style={ss.idleMicSection}>
-        {renderRing(ring3)}
-        {renderRing(ring2)}
-        {renderRing(ring1)}
-
+      <View style={ss.micSection}>
+        {renderRing(ring3)}{renderRing(ring2)}{renderRing(ring1)}
         <Animated.View style={{ transform: [{ scale: micScale }] }}>
           <TouchableOpacity
-            testID="start-analysis-btn"
-            style={ss.idleMicBtn}
-            onPress={handleStart}
-            activeOpacity={0.85}
+            testID="start-detection-btn"
+            style={ss.micBtn}
+            onPress={onStart}
+            onPressIn={() => Animated.spring(micScale, { toValue: 0.92, useNativeDriver: true }).start()}
+            onPressOut={() => Animated.spring(micScale, { toValue: 1, friction: 4, useNativeDriver: true }).start()}
+            activeOpacity={1}
           >
-            <Ionicons name="mic" size={58} color={C.bg} />
+            <Ionicons name="mic" size={52} color={C.bg} />
           </TouchableOpacity>
         </Animated.View>
+        <Text style={ss.micLabel}>Toque para detectar</Text>
       </View>
 
-      <Text style={ss.idleCta}>COMEÇAR ANÁLISE</Text>
-
-      {det.statusMessage && det.statusMessage !== 'Pronto para detectar' && (
-        <View style={ss.softBar}>
-          <Ionicons name="information-circle-outline" size={15} color={C.amber} />
-          <Text style={ss.softBarTxt}>{det.statusMessage}</Text>
-        </View>
-      )}
+      {errorMessage && !modalVisible ? (
+        <TouchableOpacity testID="error-details-btn" style={ss.errorBox} onPress={() => setModalVisible(true)} activeOpacity={0.7}>
+          <Ionicons name="alert-circle" size={16} color={C.red} />
+          <Text style={ss.errorTxt} numberOfLines={2}>{errorMessage}</Text>
+        </TouchableOpacity>
+      ) : null}
 
       <TouchableOpacity testID="logout-btn" style={ss.logoutBtn} onPress={logout} activeOpacity={0.6}>
         <Ionicons name="log-out-outline" size={13} color={C.text3} />
-        <Text style={ss.logoutTxt}>
-          Sair{session?.customer_name ? ` · ${session.customer_name}` : ''}
-        </Text>
+        <Text style={ss.logoutTxt}>Sair{session?.customer_name ? ` · ${session.customer_name}` : ''}</Text>
       </TouchableOpacity>
 
       <MicNoticeModal
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
-        onRetry={() => { setModalVisible(false); det.startAnalysis(); }}
-        reason={det.errorReason}
-        message={det.errorMessage}
+        onRetry={() => { setModalVisible(false); onStart(); }}
+        reason={errorReason}
+        message={errorMessage}
       />
     </Animated.View>
   );
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// ANALYZING — 15s countdown com captura
+// ACTIVE — tela única com nota em tempo real + tom detectado + campo
 // ═════════════════════════════════════════════════════════════════════════
-function AnalyzingScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
-  const { analyzeTimeLeft, currentNote, recentNotes, audioLevel, cancelAnalysis } = det;
-  const pulse = useRef(new Animated.Value(1)).current;
+function ActiveScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
+  const {
+    detectionState, currentKey, keyTier, liveConfidence, changeSuggestion,
+    currentNote, recentNotes, audioLevel, isStable, isRunning,
+    softInfo, reset,
+  } = det;
 
+  const confirmedKey = keyTier === 'confirmed' ? currentKey : null;
+  const provisionalKey = keyTier === 'provisional' ? currentKey : null;
+  const displayKey = confirmedKey || provisionalKey;
+  const confPct = Math.round(Math.max(0, liveConfidence) * 100);
+  const confColor = confPct >= 75 ? C.green : confPct >= 55 ? C.amber : C.text2;
+
+  const statusLabel =
+    detectionState === 'listening' ? 'OUVINDO' :
+    detectionState === 'analyzing' ? 'ANALISANDO' :
+    detectionState === 'provisional' ? 'REFINANDO' :
+    detectionState === 'change_possible' ? 'MUDANÇA?' :
+    detectionState === 'confirmed' ? (isStable ? 'ESTÁVEL' : 'CONFIRMADO') :
+    'PRONTO';
+
+  const statusDotColor =
+    detectionState === 'listening' ? C.text2 :
+    detectionState === 'analyzing' ? C.amber :
+    detectionState === 'provisional' ? C.amber :
+    detectionState === 'change_possible' ? C.blue :
+    detectionState === 'confirmed' ? C.green :
+    C.text3;
+
+  const harmonicField = useMemo(
+    () => displayKey ? getHarmonicField(displayKey.root, displayKey.quality) : [],
+    [displayKey?.root, displayKey?.quality]
+  );
+
+  const statusDot = useRef(new Animated.Value(1)).current;
+  const noteOpacity = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1.08, duration: 700, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
-      ])
-    );
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(statusDot, { toValue: 0.25, duration: 700, useNativeDriver: true }),
+      Animated.timing(statusDot, { toValue: 1, duration: 700, useNativeDriver: true }),
+    ]));
     loop.start();
     return () => loop.stop();
   }, []);
-
-  return (
-    <View style={ss.analyzeRoot}>
-      <View style={ss.analyzeHeader}>
-        <Text style={ss.analyzeTitle}>Analisando...</Text>
-        <TouchableOpacity
-          testID="cancel-analysis-btn"
-          style={ss.analyzeCancel}
-          onPress={cancelAnalysis}
-          activeOpacity={0.7}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-        >
-          <Ionicons name="close" size={24} color={C.text2} />
-        </TouchableOpacity>
-      </View>
-
-      <Animated.View style={[ss.countdownBox, { transform: [{ scale: pulse }] }]}>
-        <Text style={ss.countdownNum}>{analyzeTimeLeft}</Text>
-        <Text style={ss.countdownUnit}>segundos</Text>
-      </Animated.View>
-
-      <Text style={ss.analyzeInstruction}>
-        Continue cantando ou tocando.{'\n'}
-        Ao final, o tom será identificado.
-      </Text>
-
-      <View style={ss.visualizerBox}>
-        <AudioVisualizer level={audioLevel} color={C.amber} height={68} bars={11} active />
-      </View>
-
-      {currentNote !== null && (
-        <View style={ss.analyzeNoteBox}>
-          <Text style={ss.analyzeNoteLabel}>CAPTANDO</Text>
-          <Text style={ss.analyzeNoteTxt}>{NOTES_BR[currentNote]}</Text>
-        </View>
-      )}
-
-      <View style={ss.analyzeRecentBox}>
-        <Text style={ss.analyzeRecentLabel}>NOTAS DETECTADAS</Text>
-        <View style={ss.analyzeRecentRow}>
-          {recentNotes.length === 0 ? (
-            <Text style={ss.analyzeRecentEmpty}>aguardando notas...</Text>
-          ) : (
-            recentNotes.map((pc, i) => (
-              <View key={`${pc}-${i}`} style={ss.analyzeChip}>
-                <Text style={ss.analyzeChipTxt}>{NOTES_BR[pc]}</Text>
-              </View>
-            ))
-          )}
-        </View>
-      </View>
-    </View>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// RESULT — tom definitivo + campo harmônico
-// ═════════════════════════════════════════════════════════════════════════
-function ResultScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
-  const { lockedKey, lockedConfidence, newAnalysis, startMonitoring, reset } = det;
-  if (!lockedKey) return null;
-
-  const k = formatKeyDisplay(lockedKey.root, lockedKey.quality);
-  const confPct = Math.min(100, Math.max(0, Math.round(lockedConfidence * 100)));
-  const harmonicField = useMemo(
-    () => getHarmonicField(lockedKey.root, lockedKey.quality),
-    [lockedKey.root, lockedKey.quality]
-  );
-
-  const slideIn = useRef(new Animated.Value(30)).current;
-  const fadeIn = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(fadeIn, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(slideIn, { toValue: 0, duration: 500, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-    ]).start();
-  }, []);
+    Animated.timing(noteOpacity, {
+      toValue: currentNote !== null ? 1 : 0.3,
+      duration: 180, useNativeDriver: true,
+    }).start();
+  }, [currentNote]);
 
   return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={ss.resultScroll}>
-      <Animated.View style={{ opacity: fadeIn, transform: [{ translateY: slideIn }] }}>
-        <View style={ss.resultHeader}>
-          <Ionicons name="checkmark-circle" size={22} color={C.green} />
-          <Text style={ss.resultHeaderTxt}>TOM IDENTIFICADO</Text>
-          <TouchableOpacity
-            testID="result-close-btn"
-            onPress={reset}
-            activeOpacity={0.7}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            style={ss.resultClose}
-          >
-            <Ionicons name="close" size={22} color={C.text2} />
-          </TouchableOpacity>
-        </View>
-
-        <View style={ss.resultKeyBox}>
-          <Text style={ss.resultKeyNote}>{k.noteBr}</Text>
-          <Text style={ss.resultKeyQuality}>{k.qualityLabel}</Text>
-          <Text style={ss.resultKeyIntl}>{k.noteIntl}{lockedKey.quality === 'minor' ? 'm' : ''}</Text>
-          <View style={ss.resultConfRow}>
-            <Ionicons name="shield-checkmark" size={14} color={C.green} />
-            <Text style={ss.resultConfTxt}>Confiança {confPct}%</Text>
-          </View>
-        </View>
-
-        <View style={ss.fieldSection}>
-          <Text style={ss.fieldSectionTitle}>Campo Harmônico</Text>
-          <Text style={ss.fieldSectionSub}>
-            Acordes mais prováveis da tonalidade detectada
-          </Text>
-          <View style={ss.chordGrid}>
-            {harmonicField.map((chord, i) => (
-              <View
-                key={i}
-                testID={`chord-${i}`}
-                style={[ss.chordCard, chord.isTonic && ss.chordCardTonic]}
-              >
-                <Text style={ss.chordDegree}>{degreeLabel(i, lockedKey.quality)}</Text>
-                <Text style={[ss.chordName, chord.isTonic && ss.chordNameTonic]}>{chord.label}</Text>
-                <Text style={ss.chordIntl}>{chordIntlLabel(chord.root, chord.quality)}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        <View style={ss.resultActions}>
-          <TouchableOpacity
-            testID="monitor-btn"
-            style={ss.resultActionSecondary}
-            onPress={startMonitoring}
-            activeOpacity={0.85}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name="radio" size={18} color={C.blue} />
-            <Text style={[ss.resultActionTxt, { color: C.blue }]}>Monitorar ao vivo</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            testID="new-analysis-btn"
-            style={ss.resultActionPrimary}
-            onPress={newAnalysis}
-            activeOpacity={0.85}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Ionicons name="refresh" size={18} color={C.bg} />
-            <Text style={[ss.resultActionTxt, { color: C.bg }]}>Nova análise</Text>
-          </TouchableOpacity>
-        </View>
-      </Animated.View>
-    </ScrollView>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// MONITORING — tom travado + detecção live
-// ═════════════════════════════════════════════════════════════════════════
-function MonitoringScreen({ det }: { det: ReturnType<typeof useKeyDetection> }) {
-  const { lockedKey, lockedConfidence, currentNote, recentNotes, audioLevel, stopMonitoring, modulationCandidate } = det;
-  if (!lockedKey) return null;
-  const k = formatKeyDisplay(lockedKey.root, lockedKey.quality);
-
-  return (
-    <View style={ss.monRoot}>
-      <View style={ss.monHeader}>
-        <View>
-          <Text style={ss.monHeaderLabel}>MONITORANDO</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-            <Text style={ss.monHeaderKey}>{k.noteBr}</Text>
-            <Text style={ss.monHeaderQ}>{k.qualityLabel}</Text>
-          </View>
+    <View style={ss.activeRoot}>
+      {/* HEADER */}
+      <View style={ss.activeHeader}>
+        <Image source={require('../assets/images/logo-icon.png')} style={ss.headerLogo} resizeMode="contain" />
+        <Text style={ss.headerBrand}>Tom Certo</Text>
+        <View style={ss.headerStatusRow}>
+          <Animated.View style={[ss.statusDot, { backgroundColor: statusDotColor, opacity: statusDot }]} />
+          <Text style={ss.headerStatusTxt} numberOfLines={1}>{statusLabel}</Text>
         </View>
         <TouchableOpacity
-          testID="stop-monitor-btn"
-          onPress={stopMonitoring}
-          activeOpacity={0.7}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          style={ss.monClose}
+          testID="header-close-btn"
+          style={ss.headerCloseBtn}
+          onPress={reset}
+          activeOpacity={0.6}
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
         >
           <Ionicons name="close" size={22} color={C.text2} />
         </TouchableOpacity>
       </View>
 
-      <View style={ss.monNoteBox}>
-        <Text style={ss.monNoteLabel}>NOTA ATUAL</Text>
-        <Text style={ss.monNoteTxt}>
-          {currentNote !== null ? NOTES_BR[currentNote] : '—'}
-        </Text>
-        <AudioVisualizer level={audioLevel} color={C.amber} height={38} bars={7} active />
-      </View>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={ss.scrollPad} showsVerticalScrollIndicator={false}>
+        {/* NOTA EM TEMPO REAL ou LISTENING */}
+        <View style={ss.noteHero}>
+          {currentNote !== null ? (
+            <>
+              <View style={ss.noteHeroTopRow}>
+                <Text style={ss.noteHeroLabel}>NOTA EM TEMPO REAL</Text>
+                <AudioVisualizer level={audioLevel} color={C.amber} height={22} bars={5} active />
+              </View>
+              <Animated.View style={[ss.noteHeroBox, { opacity: noteOpacity }]}>
+                <Text style={ss.noteHeroTxt}>{NOTES_BR[currentNote]}</Text>
+                <Text style={ss.noteHeroIntl}>{NOTES_INTL[currentNote]}</Text>
+              </Animated.View>
+            </>
+          ) : (
+            <View style={ss.listeningHero}>
+              <Ionicons name="mic" size={44} color={C.amber} style={{ marginBottom: 12 }} />
+              <Text style={ss.listeningTitle}>
+                {detectionState === 'analyzing' ? 'Analisando...' : 'Ouvindo'}
+              </Text>
+              <Text style={ss.listeningSub}>Cante ou toque — o app já começou a captar</Text>
+              <View style={{ marginTop: 16 }}>
+                <AudioVisualizer level={audioLevel} color={C.amber} height={46} bars={9} active />
+              </View>
+            </View>
+          )}
+        </View>
 
-      {modulationCandidate && (
-        <View style={ss.monChangeBanner}>
-          <Ionicons name="swap-horizontal" size={16} color={C.blue} />
-          <Text style={ss.monChangeTxt}>
-            Possível mudança para{' '}
-            <Text style={{ fontFamily: 'Outfit_700Bold', color: C.blue }}>
-              {formatKeyDisplay(modulationCandidate.root, modulationCandidate.quality).noteBr}{' '}
-              {formatKeyDisplay(modulationCandidate.root, modulationCandidate.quality).qualityLabel}
+        {/* HISTÓRICO */}
+        <View style={ss.section}>
+          <Text style={ss.sectionLabel}>HISTÓRICO</Text>
+          <View style={ss.historyRow}>
+            {recentNotes.length === 0
+              ? <Text style={ss.historyEmpty}>— aguardando primeiras notas —</Text>
+              : recentNotes.map((pc, i) => {
+                  const latest = i === recentNotes.length - 1;
+                  return (
+                    <View key={`${pc}-${i}`} style={[ss.historyChip, latest && ss.historyChipActive]}>
+                      <Text style={[ss.historyChipTxt, latest && ss.historyChipTxtActive]}>{NOTES_BR[pc]}</Text>
+                    </View>
+                  );
+                })
+            }
+          </View>
+        </View>
+
+        {/* TOM DETECTADO (uma só seção com badge de tier) */}
+        {displayKey && (
+          <View style={[ss.keyCard, confirmedKey ? ss.keyCardConfirmed : ss.keyCardProv]}>
+            <View style={ss.keyCardHeader}>
+              <View style={[
+                ss.keyCardBadge,
+                confirmedKey
+                  ? { backgroundColor: 'rgba(34,197,94,0.10)', borderColor: 'rgba(34,197,94,0.35)' }
+                  : { backgroundColor: C.amberMuted, borderColor: C.amberBorder },
+              ]}>
+                <Ionicons
+                  name={confirmedKey ? 'checkmark-circle' : 'musical-notes'}
+                  size={12}
+                  color={confirmedKey ? C.green : C.amber}
+                />
+                <Text style={[
+                  ss.keyCardBadgeTxt,
+                  { color: confirmedKey ? C.green : C.amber },
+                ]}>
+                  {confirmedKey ? 'TOM CONFIRMADO' : 'TOM PROVÁVEL'}
+                </Text>
+              </View>
+              <Text style={[ss.keyCardConfPct, { color: confirmedKey ? C.green : confColor }]}>{confPct}%</Text>
+            </View>
+            <KeyDisplay root={displayKey.root} quality={displayKey.quality} provisional={!confirmedKey} />
+            <ConfidenceBar pct={confPct} color={confirmedKey ? C.green : confColor} />
+          </View>
+        )}
+
+        {/* BANNER DE MUDANÇA */}
+        {changeSuggestion && (
+          <View style={ss.changeBanner}>
+            <Ionicons name="swap-horizontal" size={16} color={C.blue} />
+            <Text style={ss.changeBannerTxt}>
+              Possível mudança para{' '}
+              <Text style={ss.changeBannerStrong}>
+                {formatKeyDisplay(changeSuggestion.root, changeSuggestion.quality).noteBr}{' '}
+                {formatKeyDisplay(changeSuggestion.root, changeSuggestion.quality).qualityLabel}
+              </Text>
             </Text>
-          </Text>
-        </View>
-      )}
+          </View>
+        )}
 
-      <View style={ss.monHistoryBox}>
-        <Text style={ss.monHistoryLabel}>HISTÓRICO</Text>
-        <View style={ss.monHistoryRow}>
-          {recentNotes.length === 0
-            ? <Text style={ss.monHistoryEmpty}>aguardando notas...</Text>
-            : recentNotes.map((pc, i) => {
-                const latest = i === recentNotes.length - 1;
-                return (
-                  <View key={`${pc}-${i}`} style={[ss.monChip, latest && ss.monChipActive]}>
-                    <Text style={[ss.monChipTxt, latest && ss.monChipTxtActive]}>{NOTES_BR[pc]}</Text>
-                  </View>
-                );
-              })
-          }
-        </View>
-      </View>
+        {/* CAMPO HARMÔNICO */}
+        {displayKey && harmonicField.length > 0 && (
+          <View style={ss.section}>
+            <Text style={ss.sectionLabel}>CAMPO HARMÔNICO</Text>
+            <View style={ss.chordGrid}>
+              {harmonicField.map((chord, i) => (
+                <View key={i} testID={`chord-${i}`} style={[ss.chordCard, chord.isTonic && ss.chordCardTonic]}>
+                  <Text style={ss.chordDegree}>{degreeLabel(i, displayKey.quality)}</Text>
+                  <Text style={[ss.chordName, chord.isTonic && ss.chordNameTonic]}>{chord.label}</Text>
+                  <Text style={ss.chordIntl}>{chordIntlLabel(chord.root, chord.quality)}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {softInfo ? (
+          <View style={ss.softBar}>
+            <Ionicons name="information-circle-outline" size={15} color={C.amber} />
+            <Text style={ss.softBarTxt}>{softInfo}</Text>
+          </View>
+        ) : null}
+      </ScrollView>
     </View>
   );
 }
 
-// ─── MicNoticeModal ──────────────────────────────────────────────────────────
+function KeyDisplay({ root, quality, provisional }: {
+  root: number; quality: 'major' | 'minor'; provisional?: boolean;
+}) {
+  const k = formatKeyDisplay(root, quality);
+  return (
+    <View style={ss.keyDisplayRow}>
+      <Text style={ss.keyDisplayNote}>{k.noteBr}</Text>
+      <Text style={[ss.keyDisplayQual, provisional && { color: C.amber }]}>{k.qualityLabel}</Text>
+      <Text style={ss.keyDisplayIntl}>({k.noteIntl})</Text>
+    </View>
+  );
+}
+
+function ConfidenceBar({ pct, color }: { pct: number; color: string }) {
+  return (
+    <View style={ss.confBarBg}>
+      <View style={[ss.confBarFill, { width: `${Math.min(100, pct)}%`, backgroundColor: color }]} />
+    </View>
+  );
+}
+
 function MicNoticeModal({ visible, onClose, onRetry, reason, message }: {
   visible: boolean; onClose: () => void; onRetry: () => void;
   reason: string | null; message: string | null;
@@ -464,7 +383,6 @@ function MicNoticeModal({ visible, onClose, onRetry, reason, message }: {
   );
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 function degreeLabel(i: number, _q: 'major' | 'minor') {
   return (['I', 'ii', 'iii', 'IV', 'V', 'vi'] as const)[i] ?? '';
 }
@@ -473,574 +391,199 @@ function chordIntlLabel(root: number, q: 'major' | 'minor' | 'dim') {
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
-const MIC_SIZE = 140;
+const MIC_SIZE = 128;
 const CHORD_GAP = 8;
 const CHORD_W = (SW - 32 - CHORD_GAP * 2) / 3;
 
 const ss = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
 
-  // ═══ IDLE ═══════════════════════════════════════════════════════════════
-  idleRoot: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: SH * 0.06,
-    paddingBottom: 28,
-    alignItems: 'center',
+  // INITIAL
+  initialRoot: {
+    flex: 1, alignItems: 'center', justifyContent: 'space-between',
+    paddingTop: SH * 0.10, paddingBottom: 36, paddingHorizontal: 24,
   },
-  idleLogoRow: { alignItems: 'center', marginBottom: 12 },
-  idleLogo: { width: 160, height: 160 },
-  idleTitle: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 28,
-    color: C.white,
-    letterSpacing: -0.6,
-    marginTop: 4,
-  },
-  idleSubtitle: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 13,
-    color: C.text2,
-    textAlign: 'center',
-    lineHeight: 19,
-    marginTop: 6,
-    marginBottom: 24,
-    maxWidth: 280,
-  },
-  idleMicSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: MIC_SIZE * 3,
-    height: MIC_SIZE * 2.2,
+  brandBlock: { alignItems: 'center' },
+  logoClean: { width: 220, height: 220 },
+  micSection: {
+    alignItems: 'center', justifyContent: 'center',
+    width: MIC_SIZE * 3, height: MIC_SIZE * 3,
   },
   micRing: {
-    position: 'absolute',
-    width: MIC_SIZE,
-    height: MIC_SIZE,
-    borderRadius: MIC_SIZE / 2,
-    borderWidth: 1.5,
-    borderColor: C.amber,
+    position: 'absolute', width: MIC_SIZE, height: MIC_SIZE,
+    borderRadius: MIC_SIZE / 2, borderWidth: 1.5, borderColor: C.amber,
   },
-  idleMicBtn: {
-    width: MIC_SIZE,
-    height: MIC_SIZE,
-    borderRadius: MIC_SIZE / 2,
-    backgroundColor: C.amber,
-    alignItems: 'center',
-    justifyContent: 'center',
+  micBtn: {
+    width: MIC_SIZE, height: MIC_SIZE, borderRadius: MIC_SIZE / 2,
+    backgroundColor: C.amber, alignItems: 'center', justifyContent: 'center',
     ...Platform.select({
-      ios: { shadowColor: C.amber, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.65, shadowRadius: 32 },
-      android: { elevation: 12 },
+      ios: { shadowColor: C.amber, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 28 },
+      android: { elevation: 10 },
       default: {},
     }),
   },
-  idleCta: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 12,
-    color: C.amber,
-    letterSpacing: 3,
-    marginTop: 2,
-    marginBottom: 28,
+  micLabel: {
+    position: 'absolute', bottom: 12,
+    fontFamily: 'Manrope_500Medium', fontSize: 13, color: C.text3, letterSpacing: 0.5,
   },
-  softBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: C.amberMuted,
-    borderWidth: 1,
-    borderColor: C.amberBorder,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    maxWidth: 320,
+  errorBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: C.redMuted, borderWidth: 1, borderColor: 'rgba(239,68,68,0.25)',
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, width: '100%',
   },
-  softBarTxt: {
-    flex: 1,
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 12,
-    color: C.amber,
-    lineHeight: 16,
-  },
-  logoutBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 'auto',
-    paddingVertical: 8,
-  },
-  logoutTxt: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 11,
-    color: C.text3,
-    letterSpacing: 0.4,
-  },
+  errorTxt: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12, color: C.red, lineHeight: 16 },
+  logoutBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 8, paddingHorizontal: 16 },
+  logoutTxt: { fontFamily: 'Manrope_500Medium', fontSize: 11, color: C.text3, letterSpacing: 0.4 },
 
-  // ═══ ANALYZING ══════════════════════════════════════════════════════════
-  analyzeRoot: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 24,
+  // ACTIVE
+  activeRoot: { flex: 1, paddingHorizontal: 16, paddingTop: 6 },
+  activeHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: C.border, marginBottom: 8,
   },
-  analyzeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 20,
+  headerLogo: { width: 26, height: 26 },
+  headerBrand: {
+    fontFamily: 'Outfit_700Bold', fontSize: 15, color: C.white, flex: 1, letterSpacing: -0.3,
   },
-  analyzeTitle: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 22,
-    color: C.white,
-    letterSpacing: -0.4,
+  headerStatusRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: C.surface, borderRadius: 10, borderWidth: 1, borderColor: C.border,
+    paddingHorizontal: 9, paddingVertical: 5,
   },
-  analyzeCancel: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: C.surface,
-    borderWidth: 1,
-    borderColor: C.border,
+  statusDot: { width: 7, height: 7, borderRadius: 4 },
+  headerStatusTxt: { fontFamily: 'Manrope_600SemiBold', fontSize: 10, color: C.text2, letterSpacing: 1.5 },
+  headerCloseBtn: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: C.surface, borderWidth: 1, borderColor: C.border,
+    marginLeft: 4,
   },
-  countdownBox: {
-    alignItems: 'center',
-    marginVertical: 20,
+  scrollPad: { paddingBottom: 24, gap: 14 },
+
+  noteHero: {
+    backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: C.border,
+    overflow: 'hidden',
   },
-  countdownNum: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 180,
-    color: C.amber,
-    letterSpacing: -8,
-    lineHeight: 190,
+  noteHeroTopRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 18, paddingTop: 14, paddingBottom: 2,
+  },
+  noteHeroLabel: {
+    fontFamily: 'Manrope_600SemiBold', fontSize: 10, color: C.text3, letterSpacing: 2.5,
+  },
+  noteHeroBox: { alignItems: 'center', paddingBottom: 16 },
+  noteHeroTxt: {
+    fontFamily: 'Outfit_800ExtraBold', fontSize: 128, color: C.white,
+    letterSpacing: -5, lineHeight: 138,
     ...Platform.select({
-      ios: { textShadowColor: C.amberGlow, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 38 },
+      ios: { textShadowColor: C.amberGlow, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 32 },
       default: {},
     }),
   },
-  countdownUnit: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 13,
-    color: C.text2,
-    letterSpacing: 2,
-    marginTop: -10,
+  noteHeroIntl: {
+    fontFamily: 'Manrope_500Medium', fontSize: 14, color: C.text2, letterSpacing: 1, marginTop: -8,
   },
-  analyzeInstruction: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 13,
-    color: C.text2,
-    textAlign: 'center',
-    lineHeight: 19,
-    marginTop: 4,
-    marginBottom: 24,
+  listeningHero: {
+    alignItems: 'center', paddingVertical: 30, paddingHorizontal: 20,
   },
-  visualizerBox: {
-    alignItems: 'center',
-    marginBottom: 28,
+  listeningTitle: {
+    fontFamily: 'Outfit_800ExtraBold', fontSize: 30, color: C.white, letterSpacing: -1, marginBottom: 4,
   },
-  analyzeNoteBox: {
-    alignItems: 'center',
-    paddingVertical: 14,
-    backgroundColor: C.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: C.border,
-    marginBottom: 14,
-  },
-  analyzeNoteLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 9,
-    color: C.text3,
-    letterSpacing: 2.5,
-  },
-  analyzeNoteTxt: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 64,
-    color: C.white,
-    lineHeight: 70,
-    letterSpacing: -2,
-  },
-  analyzeRecentBox: { gap: 8 },
-  analyzeRecentLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 9,
-    color: C.text3,
-    letterSpacing: 2.5,
-  },
-  analyzeRecentRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: C.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: C.border,
-    minHeight: 44,
-    alignItems: 'center',
-  },
-  analyzeRecentEmpty: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 11,
-    color: C.text3,
-    fontStyle: 'italic',
-  },
-  analyzeChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    minWidth: 32,
-    alignItems: 'center',
-  },
-  analyzeChipTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 12,
-    color: C.text2,
-    letterSpacing: 0.3,
+  listeningSub: {
+    fontFamily: 'Manrope_400Regular', fontSize: 13, color: C.text2, textAlign: 'center', maxWidth: 260,
   },
 
-  // ═══ RESULT ═════════════════════════════════════════════════════════════
-  resultScroll: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 28,
-    gap: 18,
+  section: { gap: 8 },
+  sectionLabel: {
+    fontFamily: 'Manrope_600SemiBold', fontSize: 10, color: C.text3, letterSpacing: 2.5, paddingHorizontal: 2,
   },
-  resultHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
+  historyRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 6,
+    paddingVertical: 10, paddingHorizontal: 12,
+    backgroundColor: C.surface, borderRadius: 12, borderWidth: 1, borderColor: C.border,
+    minHeight: 44, alignItems: 'center',
   },
-  resultHeaderTxt: {
-    flex: 1,
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 11,
-    color: C.green,
-    letterSpacing: 2,
+  historyEmpty: { fontFamily: 'Manrope_400Regular', fontSize: 11, color: C.text3, fontStyle: 'italic' },
+  historyChip: {
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+    minWidth: 32, alignItems: 'center',
   },
-  resultClose: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: C.surface,
-    borderWidth: 1,
-    borderColor: C.border,
+  historyChipActive: { backgroundColor: 'rgba(255,176,32,0.14)', borderColor: 'rgba(255,176,32,0.50)' },
+  historyChipTxt: { fontFamily: 'Outfit_700Bold', fontSize: 12, color: C.text2, letterSpacing: 0.3 },
+  historyChipTxtActive: { color: C.amber },
+
+  keyCard: {
+    backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, padding: 14, gap: 10,
   },
-  resultKeyBox: {
-    alignItems: 'center',
-    paddingVertical: 32,
-    paddingHorizontal: 20,
-    backgroundColor: C.greenMuted,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: C.greenBorder,
+  keyCardProv: { borderColor: C.amberBorder },
+  keyCardConfirmed: { borderColor: 'rgba(34,197,94,0.30)' },
+  keyCardHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
   },
-  resultKeyNote: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 106,
-    color: C.white,
-    letterSpacing: -4,
-    lineHeight: 115,
+  keyCardBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 9, paddingVertical: 4, borderRadius: 99, borderWidth: 1,
   },
-  resultKeyQuality: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 28,
-    color: C.white,
-    letterSpacing: -0.6,
-    marginTop: -8,
+  keyCardBadgeTxt: { fontFamily: 'Manrope_600SemiBold', fontSize: 9.5, letterSpacing: 1.8 },
+  keyCardConfPct: { fontFamily: 'Outfit_700Bold', fontSize: 13, color: C.text2, letterSpacing: -0.3 },
+  keyDisplayRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  keyDisplayNote: {
+    fontFamily: 'Outfit_800ExtraBold', fontSize: 40, color: C.white, lineHeight: 44, letterSpacing: -1.2,
   },
-  resultKeyIntl: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 14,
-    color: C.text2,
-    letterSpacing: 1,
-    marginTop: 4,
+  keyDisplayQual: { fontFamily: 'Outfit_700Bold', fontSize: 22, color: C.white, letterSpacing: -0.5 },
+  keyDisplayIntl: { fontFamily: 'Manrope_400Regular', fontSize: 13, color: C.text3 },
+  confBarBg: { height: 4, borderRadius: 99, backgroundColor: 'rgba(255,255,255,0.06)', overflow: 'hidden' },
+  confBarFill: { height: '100%', borderRadius: 99 },
+
+  changeBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12,
+    backgroundColor: 'rgba(96,165,250,0.10)', borderWidth: 1, borderColor: 'rgba(96,165,250,0.35)',
   },
-  resultConfRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 99,
-    backgroundColor: C.bg,
-    borderWidth: 1,
-    borderColor: C.greenBorder,
+  changeBannerTxt: {
+    fontFamily: 'Manrope_500Medium', fontSize: 12.5, color: C.text2, letterSpacing: 0.2, flexShrink: 1,
   },
-  resultConfTxt: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 12,
-    color: C.green,
-    letterSpacing: 0.4,
-  },
-  fieldSection: { gap: 10 },
-  fieldSectionTitle: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 18,
-    color: C.white,
-    letterSpacing: -0.3,
-  },
-  fieldSectionSub: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 12,
-    color: C.text2,
-    marginTop: -4,
-    marginBottom: 6,
-  },
+  changeBannerStrong: { fontFamily: 'Outfit_700Bold', color: C.blue },
+
   chordGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: CHORD_GAP },
   chordCard: {
-    width: CHORD_W,
-    backgroundColor: C.surface,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: C.border,
+    width: CHORD_W, backgroundColor: C.surface, borderRadius: 12,
+    paddingVertical: 10, paddingHorizontal: 6,
+    alignItems: 'center', borderWidth: 1, borderColor: C.border,
   },
   chordCardTonic: { backgroundColor: C.amberMuted, borderColor: C.amberBorder },
-  chordDegree: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.text3,
-    letterSpacing: 1,
-    marginBottom: 3,
-  },
-  chordName: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 17,
-    color: C.white,
-    letterSpacing: -0.3,
-  },
+  chordDegree: { fontFamily: 'Manrope_600SemiBold', fontSize: 10, color: C.text3, letterSpacing: 1, marginBottom: 2 },
+  chordName: { fontFamily: 'Outfit_700Bold', fontSize: 16, color: C.white, letterSpacing: -0.3 },
   chordNameTonic: { color: C.amber },
-  chordIntl: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 10,
-    color: C.text3,
-    marginTop: 1,
-  },
-  resultActions: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 6,
-  },
-  resultActionPrimary: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 52,
-    borderRadius: 99,
-    backgroundColor: C.amber,
-  },
-  resultActionSecondary: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    height: 52,
-    borderRadius: 99,
-    backgroundColor: C.surface,
-    borderWidth: 1,
-    borderColor: 'rgba(96,165,250,0.35)',
-  },
-  resultActionTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 14,
-    letterSpacing: 0.3,
-  },
+  chordIntl: { fontFamily: 'Manrope_400Regular', fontSize: 10, color: C.text3, marginTop: 1 },
 
-  // ═══ MONITORING ═════════════════════════════════════════════════════════
-  monRoot: {
-    flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 24,
+  softBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: C.amberMuted, borderWidth: 1, borderColor: C.amberBorder,
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10,
   },
-  monHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
-  },
-  monHeaderLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.text3,
-    letterSpacing: 2,
-    marginBottom: 2,
-  },
-  monHeaderKey: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 32,
-    color: C.white,
-    letterSpacing: -0.8,
-  },
-  monHeaderQ: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 18,
-    color: C.text2,
-  },
-  monClose: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: C.surface,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
-  monNoteBox: {
-    alignItems: 'center',
-    paddingVertical: 20,
-    backgroundColor: C.surface,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: C.border,
-    gap: 10,
-  },
-  monNoteLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.text3,
-    letterSpacing: 2.5,
-  },
-  monNoteTxt: {
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 88,
-    color: C.white,
-    letterSpacing: -3,
-    lineHeight: 96,
-  },
-  monChangeBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: 'rgba(96,165,250,0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(96,165,250,0.35)',
-    marginTop: 14,
-  },
-  monChangeTxt: {
-    flex: 1,
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 12.5,
-    color: C.text2,
-  },
-  monHistoryBox: { gap: 8, marginTop: 16 },
-  monHistoryLabel: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 10,
-    color: C.text3,
-    letterSpacing: 2,
-  },
-  monHistoryRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: C.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: C.border,
-    minHeight: 44,
-    alignItems: 'center',
-  },
-  monHistoryEmpty: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 11,
-    color: C.text3,
-    fontStyle: 'italic',
-  },
-  monChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    minWidth: 32,
-    alignItems: 'center',
-  },
-  monChipActive: {
-    backgroundColor: 'rgba(255,176,32,0.14)',
-    borderColor: 'rgba(255,176,32,0.50)',
-  },
-  monChipTxt: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 12,
-    color: C.text2,
-  },
-  monChipTxtActive: { color: C.amber },
+  softBarTxt: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12, color: C.amber, lineHeight: 16 },
 
-  // ═══ MODAL ══════════════════════════════════════════════════════════════
+  // MODAL
   modalBg: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.82)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.82)',
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28,
   },
   modalCard: {
-    backgroundColor: C.surface,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: C.border,
-    padding: 28,
-    width: '100%',
-    alignItems: 'center',
+    backgroundColor: C.surface, borderRadius: 24,
+    borderWidth: 1, borderColor: C.border,
+    padding: 28, width: '100%', alignItems: 'center',
   },
   modalTitle: {
-    fontFamily: 'Outfit_700Bold',
-    fontSize: 20,
-    color: C.white,
-    marginBottom: 8,
-    letterSpacing: -0.3,
+    fontFamily: 'Outfit_700Bold', fontSize: 20, color: C.white, marginBottom: 8, letterSpacing: -0.3,
   },
-  modalMsg: {
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 14,
-    color: C.text2,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
+  modalMsg: { fontFamily: 'Manrope_400Regular', fontSize: 14, color: C.text2, textAlign: 'center', lineHeight: 20 },
   modalPrimary: {
-    height: 48,
-    borderRadius: 99,
-    backgroundColor: C.amber,
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: 48, borderRadius: 99, backgroundColor: C.amber,
+    alignItems: 'center', justifyContent: 'center',
   },
-  modalPrimaryTxt: {
-    fontFamily: 'Manrope_600SemiBold',
-    fontSize: 15,
-    color: C.bg,
-    letterSpacing: 0.4,
-  },
+  modalPrimaryTxt: { fontFamily: 'Manrope_600SemiBold', fontSize: 15, color: C.bg, letterSpacing: 0.4 },
   modalSecondary: { height: 40, alignItems: 'center', justifyContent: 'center' },
-  modalSecondaryTxt: {
-    fontFamily: 'Manrope_500Medium',
-    fontSize: 13,
-    color: C.text2,
-  },
+  modalSecondaryTxt: { fontFamily: 'Manrope_500Medium', fontSize: 13, color: C.text2 },
 });
