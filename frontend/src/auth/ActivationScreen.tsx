@@ -44,10 +44,15 @@ const WHATSAPP_URL =
   'https://wa.me/5563992029322?text=Ol%C3%A1.%20Quero%20Token%20de%20acesso%20do%20aplicativo';
 
 export default function ActivationScreen() {
-  const { activate, errorMessage, clearError } = useAuth();
+  const { activate, errorMessage, clearError, hasSavedToken, forgetDevice } = useAuth();
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [focused, setFocused] = useState(false);
+  // Quando usuário clica "Usar outro token", libera o input mesmo com token salvo
+  const [forceShowInput, setForceShowInput] = useState(false);
+
+  // Mostra input apenas se não houver token salvo OU se o usuário pediu pra trocar
+  const showInput = !hasSavedToken || forceShowInput;
 
   // ── Animações ────────────────────────────────────────────────────────────
   const fade = useRef(new Animated.Value(0)).current;
@@ -127,11 +132,31 @@ export default function ActivationScreen() {
   };
 
   const onSubmit = async () => {
-    if (busy || !code.trim()) return;
-    Keyboard.dismiss();
-    setBusy(true);
-    await activate(code);
-    setBusy(false);
+    if (busy) return;
+    // Se o input estiver visível, exige código digitado.
+    // Caso contrário (token salvo), ativa usando o token persistido.
+    if (showInput) {
+      if (!code.trim()) return;
+      Keyboard.dismiss();
+      setBusy(true);
+      await activate(code);
+      setBusy(false);
+    } else {
+      Keyboard.dismiss();
+      setBusy(true);
+      const r = await activate(); // usa token salvo
+      setBusy(false);
+      // Se o token salvo falhou (inválido/expirado), libera o input
+      if (!r.ok) setForceShowInput(true);
+    }
+  };
+
+  // Permite ao usuário trocar o token — apaga o salvo e libera o input
+  const onUseAnotherToken = async () => {
+    if (busy) return;
+    setCode('');
+    await forgetDevice();
+    setForceShowInput(true);
   };
 
   // ── Botão principal: press feedback ─────────────────────────────────────
@@ -166,7 +191,7 @@ export default function ActivationScreen() {
     }
   };
 
-  const canSubmit = !busy && code.trim().length > 0;
+  const canSubmit = showInput ? (!busy && code.trim().length > 0) : !busy;
 
   return (
     <SafeAreaView style={ss.safe} edges={['top', 'bottom']}>
@@ -198,46 +223,58 @@ export default function ActivationScreen() {
               <Text style={ss.tagline}>Detector de tonalidade</Text>
             </View>
 
-            {/* ── Input ────────────────────────────────────────────────── */}
-            <Animated.View style={[ss.inputBlock, { transform: [{ translateX: errorShake }] }]}>
-              <Text style={ss.inputLabel}>TOKEN DE ACESSO</Text>
-              <TextInput
-                testID="activation-code-input"
-                style={ss.input}
-                value={code}
-                onChangeText={onChangeCode}
-                onFocus={() => setFocused(true)}
-                onBlur={() => setFocused(false)}
-                onSubmitEditing={onSubmit}
-                placeholder="Digite seu token de acesso"
-                placeholderTextColor={C.text3}
-                autoCapitalize="characters"
-                autoCorrect={false}
-                maxLength={24}
-                returnKeyType="done"
-                selectionColor={C.amber}
-                underlineColorAndroid="transparent"
-              />
-              {/* Base underline */}
-              <View style={ss.underlineBase} />
-              {/* Active underline com glow */}
-              <Animated.View
-                style={[
-                  ss.underlineActive,
-                  {
-                    transform: [{ scaleX: underlineScale }],
-                    opacity: focused || code.length > 0 ? 1 : 0.45,
-                  },
-                ]}
-              />
+            {/* ── Input (só aparece quando não há token salvo ou usuário quer trocar) */}
+            {showInput && (
+              <Animated.View style={[ss.inputBlock, { transform: [{ translateX: errorShake }] }]}>
+                <Text style={ss.inputLabel}>TOKEN DE ACESSO</Text>
+                <TextInput
+                  testID="activation-code-input"
+                  style={ss.input}
+                  value={code}
+                  onChangeText={onChangeCode}
+                  onFocus={() => setFocused(true)}
+                  onBlur={() => setFocused(false)}
+                  onSubmitEditing={onSubmit}
+                  placeholder="Digite seu token de acesso"
+                  placeholderTextColor={C.text3}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  maxLength={24}
+                  returnKeyType="done"
+                  selectionColor={C.amber}
+                  underlineColorAndroid="transparent"
+                />
+                {/* Base underline */}
+                <View style={ss.underlineBase} />
+                {/* Active underline com glow */}
+                <Animated.View
+                  style={[
+                    ss.underlineActive,
+                    {
+                      transform: [{ scaleX: underlineScale }],
+                      opacity: focused || code.length > 0 ? 1 : 0.45,
+                    },
+                  ]}
+                />
 
-              {errorMessage ? (
-                <View style={ss.errorRow}>
-                  <Ionicons name="alert-circle" size={15} color={C.red} />
-                  <Text style={ss.errorTxt} numberOfLines={3}>{errorMessage}</Text>
-                </View>
-              ) : null}
-            </Animated.View>
+                {errorMessage ? (
+                  <View style={ss.errorRow}>
+                    <Ionicons name="alert-circle" size={15} color={C.red} />
+                    <Text style={ss.errorTxt} numberOfLines={3}>{errorMessage}</Text>
+                  </View>
+                ) : null}
+              </Animated.View>
+            )}
+
+            {/* ── Erro quando NÃO há input (token salvo falhou, etc) ── */}
+            {!showInput && errorMessage ? (
+              <Animated.View
+                style={[ss.errorRowStandalone, { transform: [{ translateX: errorShake }] }]}
+              >
+                <Ionicons name="alert-circle" size={15} color={C.red} />
+                <Text style={ss.errorTxt} numberOfLines={3}>{errorMessage}</Text>
+              </Animated.View>
+            ) : null}
 
             {/* ── Botão principal ─────────────────────────────────────── */}
             <Animated.View style={{ width: '100%', transform: [{ scale: ctaScale }] }}>
@@ -269,22 +306,35 @@ export default function ActivationScreen() {
               </TouchableOpacity>
             </Animated.View>
 
-            {/* ── Link WhatsApp ──────────────────────────────────────── */}
-            <Animated.View style={{ transform: [{ scale: waLinkScale }], marginTop: 22 }}>
+            {/* ── Link secundário ─────────────────────────────────────── */}
+            {!showInput ? (
+              // Tem token salvo → link discreto "Usar outro token"
               <TouchableOpacity
-                testID="request-token-btn"
-                onPress={openWhatsApp}
-                onPressIn={waPressIn}
-                onPressOut={waPressOut}
-                activeOpacity={0.75}
-                style={ss.waLink}
+                testID="use-other-token-btn"
+                onPress={onUseAnotherToken}
+                activeOpacity={0.6}
+                style={ss.subtleLink}
               >
-                <Text style={ss.waLinkTxt}>
-                  Não tem token de acesso?{'\n'}
-                  <Text style={ss.waLinkTxtStrong}>Solicitar token de acesso</Text>
-                </Text>
+                <Text style={ss.subtleLinkTxt}>Usar outro token</Text>
               </TouchableOpacity>
-            </Animated.View>
+            ) : (
+              // Sem token salvo → link do WhatsApp pra solicitar token
+              <Animated.View style={{ transform: [{ scale: waLinkScale }], marginTop: 22 }}>
+                <TouchableOpacity
+                  testID="request-token-btn"
+                  onPress={openWhatsApp}
+                  onPressIn={waPressIn}
+                  onPressOut={waPressOut}
+                  activeOpacity={0.75}
+                  style={ss.waLink}
+                >
+                  <Text style={ss.waLinkTxt}>
+                    Não tem token de acesso?{'\n'}
+                    <Text style={ss.waLinkTxtStrong}>Solicitar token de acesso</Text>
+                  </Text>
+                </TouchableOpacity>
+              </Animated.View>
+            )}
 
             {/* ── Mensagem de confiança ──────────────────────────────── */}
             <View style={ss.trust}>
@@ -464,6 +514,32 @@ const ss = StyleSheet.create({
     color: C.amberSoft,
     textDecorationLine: 'underline',
     textDecorationColor: C.amberSoftDim,
+  },
+
+  // ── Link discreto "Usar outro token" (quando há token salvo) ─────────
+  subtleLink: {
+    marginTop: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+  },
+  subtleLinkTxt: {
+    fontFamily: 'Manrope_500Medium',
+    fontSize: 12.5,
+    color: C.text3,
+    letterSpacing: 0.5,
+    textDecorationLine: 'underline',
+    textDecorationColor: 'rgba(85,85,85,0.4)',
+  },
+
+  // ── Erro standalone (sem input visível) ──────────────────────────────
+  errorRowStandalone: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    marginBottom: 24,
+    paddingHorizontal: 4,
+    maxWidth: '90%',
   },
 
   // ── Mensagem de confiança ───────────────────────────────────────────
