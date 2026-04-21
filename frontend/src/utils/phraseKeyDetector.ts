@@ -36,9 +36,9 @@ export const VOTE_LONGEST = 1.5;
 
 // ─── Estabilidade / decay ─────────────────────────────────────────────
 export const TALLY_DECAY = 0.85;            // tally antigo mantém 85% a cada nova frase
-export const STAGE_PROBABLE_MIN_CONF = 0.18;
-export const STAGE_CONFIRMED_MIN_CONF = 0.32;
-export const STAGE_DEFINITIVE_MIN_CONF = 0.45;
+export const STAGE_PROBABLE_MIN_CONF = 0.35;
+export const STAGE_CONFIRMED_MIN_CONF = 0.65;
+export const STAGE_DEFINITIVE_MIN_CONF = 0.82;
 export const STAGE_DEFINITIVE_MIN_QUALITY_MARGIN = 1.15;
 
 export type DetectionStage = 'listening' | 'probable' | 'confirmed' | 'definitive';
@@ -221,20 +221,32 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
   // 3) Atualiza histograma de duração (para análise de qualidade)
   const newDurHist = updateNoteDurHist(state.noteDurHist, phrase);
 
-  // 4) Encontra tônica candidata (top do tally)
+  // 4) Encontra tônica candidata (top do tally) + segundo colocado
   let topPc = 0;
   let topWeight = -Infinity;
+  let secondWeight = 0;
   let sumWeight = 0;
   for (let pc = 0; pc < 12; pc++) {
     sumWeight += newTally[pc];
     if (newTally[pc] > topWeight) {
+      secondWeight = topWeight > -Infinity ? topWeight : 0;
       topWeight = newTally[pc];
       topPc = pc;
+    } else if (newTally[pc] > secondWeight) {
+      secondWeight = newTally[pc];
     }
   }
 
-  // 5) Confiança = ratio top / total  (0..1)
-  const tonicConfidence = sumWeight > 0 ? topWeight / sumWeight : 0;
+  // 5) Confiança — métrica musicalmente interpretável
+  //    Combina:
+  //    (a) margem: quanto a tônica vence a segunda candidata (0..1)
+  //    (b) stage floor: cada stage tem um mínimo perceptual
+  //    (c) acumulação: mais frases = maior confiança base
+  const marginRatio = topWeight > 0
+    ? Math.min(1, (topWeight - secondWeight) / (topWeight + 0.5))
+    : 0;
+  const phraseBonus = Math.min(1, (state.phrases.length + 1) / 3); // 1 frase → 0.33, 3+ → 1.0
+  const rawConf = 0.45 * marginRatio + 0.55 * phraseBonus * Math.min(1, topWeight / 12);
 
   // 6) Qualidade (só faz sentido calcular se já há tônica candidata)
   const qr = determineQuality(newDurHist, topPc);
@@ -262,11 +274,19 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
 
   const stage = determineStage({
     phraseCount: newPhrases.length,
-    tonicConfidence,
+    tonicConfidence: rawConf,
     qualityMargin: qr.margin,
     lastPhrasesAgree,
     lastThreePhrasesAgree,
   });
+
+  // Confiança perceptual final: piso por stage + margem musical
+  // Garante que "definitivo" mostre ao menos 80%, "confirmado" 60%, etc.
+  let tonicConfidence = rawConf;
+  if (stage === 'definitive') tonicConfidence = Math.max(0.82, Math.min(1, 0.82 + marginRatio * 0.18));
+  else if (stage === 'confirmed') tonicConfidence = Math.max(0.62, Math.min(0.85, 0.62 + marginRatio * 0.25));
+  else if (stage === 'probable') tonicConfidence = Math.max(0.35, Math.min(0.65, 0.35 + marginRatio * 0.30));
+  else tonicConfidence = 0;
 
   return {
     phrases: newPhrases,
