@@ -284,36 +284,62 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     }
   }, []);
 
-  // ── Histograma com pesos musicais ───────────────────────────────────────
+  // ── Histograma com pesos MUSICAIS (baseado em NOTE EVENTS) ──────────────
+  // Agrupa frames consecutivos de mesma pitch class em "events" (notas musicais).
+  // Cada evento contribui UMA VEZ ao histograma, com peso = duração × rms_médio.
+  // Isso evita que notas sustentadas inflem artificialmente o histograma.
   const buildHistogram = useCallback((history: NoteEvent[], now: number): number[] => {
-    const rawCounts = new Array(12).fill(0);
-    const maxRun = new Array(12).fill(0);
     const histogram = new Array(12).fill(0);
+    const uniqueCount = new Array(12).fill(0);
+    // Usando array-box para evitar problema de type narrowing do TS
+    const sustainedBox: Array<{ pc: number; frames: number }> = [];
+    let lastPc: number | null = null;
+    let eventStart = 0;
+    let eventEnd = 0;
+    let eventRmsSum = 0;
+    let eventFrameCount = 0;
 
-    for (const note of history) {
-      const age = (now - note.timestamp) / HISTORY_MS;
+    function commit() {
+      if (lastPc === null || eventFrameCount < 2) return;
+      const durMs = eventEnd - eventStart + 128;
+      const rmsAvg = eventRmsSum / eventFrameCount;
+      const age = (now - eventEnd) / HISTORY_MS;
       const decay = Math.exp(-HISTOGRAM_DECAY * age);
-      const durationWeight = 1.0 + Math.log1p(note.runLength) * 0.6;
-      histogram[note.pitchClass] += note.rms * decay * durationWeight;
-      rawCounts[note.pitchClass]++;
-      if (note.runLength > maxRun[note.pitchClass]) maxRun[note.pitchClass] = note.runLength;
-    }
-
-    const total = history.length || 1;
-    for (let i = 0; i < 12; i++) {
-      const freq = rawCounts[i] / total;
-      histogram[i] *= 1.0 + freq * REPETITION_BOOST;
-    }
-    for (let i = 0; i < 12; i++) {
-      if (maxRun[i] >= 4) {
-        histogram[i] *= 1.0 + (maxRun[i] / 10) * DURATION_BOOST * 0.25;
+      const weight = Math.sqrt(durMs / 500) * rmsAvg * decay;
+      histogram[lastPc] += weight;
+      uniqueCount[lastPc] += 1;
+      if (eventFrameCount >= 4) {
+        sustainedBox.length = 0;
+        sustainedBox.push({ pc: lastPc, frames: eventFrameCount });
       }
     }
 
-    // ── Cadência: últimas ~3 notas distintas ganham peso extra ──
-    // Notas de fechamento/repouso definem tonalidade musicalmente
+    for (const n of history) {
+      if (n.pitchClass !== lastPc) {
+        commit();
+        lastPc = n.pitchClass;
+        eventStart = n.timestamp;
+        eventEnd = n.timestamp;
+        eventRmsSum = n.rms;
+        eventFrameCount = 1;
+      } else {
+        eventEnd = n.timestamp;
+        eventRmsSum += n.rms;
+        eventFrameCount++;
+      }
+    }
+    commit(); // flush final
+
+    // ── Boost por diversidade: se nota apareceu em MÚLTIPLOS eventos distintos,
+    //    é mais provável ser nota da escala (não apenas sustain random)
+    for (let i = 0; i < 12; i++) {
+      if (uniqueCount[i] >= 2) histogram[i] *= 1.0 + Math.log1p(uniqueCount[i]) * 0.3;
+    }
+
+    // ── Cadência: últimas ~2 notas distintas ganham peso extra ──
+    // Notas finais definem tonalidade (ex: "fim de frase na tônica")
     const recentUnique: number[] = [];
-    for (let i = history.length - 1; i >= 0 && recentUnique.length < 3; i--) {
+    for (let i = history.length - 1; i >= 0 && recentUnique.length < 2; i--) {
       const pc = history[i].pitchClass;
       if (!recentUnique.includes(pc)) recentUnique.push(pc);
     }
@@ -321,15 +347,9 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       histogram[pc] *= CADENCE_BOOST;
     }
 
-    // ── TÔNICA SUSTENTADA: última nota com runLength ≥ 3 ganha peso MAIOR ──
-    // Resolve ambiguidade C maior vs A menor: a nota onde a pessoa "descansa"
-    // (sustentada no fim) é a tônica real.
-    for (let i = history.length - 1; i >= 0; i--) {
-      const n = history[i];
-      if (n.runLength >= 3) {
-        histogram[n.pitchClass] *= TONIC_SUSTAIN_BOOST;
-        break; // só a mais recente sustentada
-      }
+    // ── Tônica sustentada: boost LEVE (já contido pelo sqrt acima) ──
+    if (sustainedBox.length > 0) {
+      histogram[sustainedBox[0].pc] *= 1.15;
     }
 
     return histogram;
