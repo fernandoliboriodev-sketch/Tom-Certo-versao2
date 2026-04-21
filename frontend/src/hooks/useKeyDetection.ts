@@ -51,20 +51,20 @@ const HISTORY_MS = 15000;
 const RECENT_WINDOW_MS = 4000;      // janela curta para shadow tracking
 const ANALYZE_INTERVAL_MS = 250;    // ↓ 300 → 250ms (UI mais responsiva)
 
-// ─── Filtros de qualidade (AFROUXADOS para resposta rápida) ────────────────
-const MIN_RMS = 0.018;              // ↓ 0.020 → 0.018 (levemente mais sensível)
-const MIN_CLARITY = 0.82;           // ↓ 0.88 → 0.82 (mostra nota antes)
-const FREQ_SMOOTH_WINDOW = 5;       // ↓ 7 → 5 (menos lag, ~320ms)
+// ─── Filtros de qualidade (calibrados para VOZ cantada, não instrumento) ──
+const MIN_RMS = 0.012;              // ↓ 0.018 → 0.012 (voz suave passa)
+const MIN_CLARITY = 0.55;           // ↓ 0.82 → 0.55 (voz tem vibrato/ar — mais permissivo)
+const FREQ_SMOOTH_WINDOW = 7;       // ↑ 5 → 7 (mais estável)
 
 // ─── Histerese anti-vibrato ────────────────────────────────────────────────
-// Se variação de MIDI < 30 cents do último valor mostrado, mantém pitch class
-const HYSTERESIS_CENTS = 30;
+// Voz cantada tem vibrato de até ±50 cents. Mantém pitch class se variação pequena.
+const HYSTERESIS_CENTS = 50;        // ↑ 30 → 50 (metade de semitom)
 
-// ─── Camada 1: Provisional (RESPOSTA IMEDIATA) ─────────────────────────────
-const PROV_MIN_MS = 500;            // ↓ 1200 → 500ms (mostra rápido!)
-const PROV_MIN_SAMPLES = 3;         // ↓ 6 → 3
-const PROV_MIN_UNIQUE = 2;          // ↓ 3 → 2 notas distintas já basta
-const PROV_MIN_CONFIDENCE = 0.40;   // ↓ 0.50 → 0.40 (mais permissivo)
+// ─── Camada 1: Provisional (evidência suficiente antes de palpitar) ─────────
+const PROV_MIN_MS = 3000;           // ↑ 500 → 3000 (3s mínimo de contexto)
+const PROV_MIN_SAMPLES = 10;        // ↑ 3 → 10 (mais frames)
+const PROV_MIN_UNIQUE = 4;          // ↑ 2 → 4 notas distintas
+const PROV_MIN_CONFIDENCE = 0.60;   // ↑ 0.40 → 0.60 (não mostrar palpite ruim)
 
 // ─── Camada 2: Confirmed ───────────────────────────────────────────────────
 const CONF_MIN_MS = 4000;           // ↓ 5000 → 4000
@@ -186,6 +186,11 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const lastRecentUpdateRef = useRef<number>(0);
   const audioLevelRef = useRef<number>(0); // escrito em onPitch, drenado por analyzeKey
 
+  // Buffer para MODA de pitch class (mais estável que mediana de frequência)
+  const pcBuffer = useRef<{ pc: number; clarity: number; midi: number }[]>([]);
+  // Contador de frames consecutivos do mesmo pc candidato (anti-transiente)
+  const pcCandidateRef = useRef<{ pc: number; count: number } | null>(null);
+
   const engine = usePitchEngine();
   const engineRef = useRef(engine);
   engineRef.current = engine;
@@ -202,10 +207,8 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const onPitch = useCallback((e: PitchEvent) => {
     if (!isRunningRef.current) return;
 
-    // SEMPRE registrar o nível de áudio (mesmo antes de passar filtros),
-    // para o visualizer da UI mostrar que o mic está captando.
-    // EMA suave para não oscilar demais
-    const normLevel = Math.min(1, e.rms * 8); // 0..1 (8× ganho para visualização)
+    // Audio level sempre registrado (p/ visualizer)
+    const normLevel = Math.min(1, e.rms * 8);
     audioLevelRef.current = audioLevelRef.current * 0.6 + normLevel * 0.4;
 
     if (e.rms < MIN_RMS || e.clarity < MIN_CLARITY) return;
@@ -214,28 +217,53 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     lastValidPitchAtRef.current = now;
     silenceHintShownRef.current = false;
 
-    freqBuffer.current.push(e.frequency);
-    if (freqBuffer.current.length > FREQ_SMOOTH_WINDOW) freqBuffer.current.shift();
-    const sortedFreqs = [...freqBuffer.current].sort((a, b) => a - b);
-    const medianFreq = sortedFreqs[Math.floor(sortedFreqs.length / 2)];
-    const currentMidi = frequencyToMidi(medianFreq);
-    let pc = midiToPitchClass(currentMidi);
+    // ── 1) Compute pitch class raw deste frame ─────────────────────────────
+    const rawMidi = frequencyToMidi(e.frequency);
+    const rawPc = midiToPitchClass(rawMidi);
 
-    // ── Histerese anti-vibrato ─────────────────────────────────────────────
-    // Se a variação em cents desde a última nota exibida < 30, mantém a nota
-    // atual (evita troca de pitch class por oscilação vocal/vibrato).
+    // ── 2) Buffer de pitch classes (FIFO de 7) ──────────────────────────────
+    pcBuffer.current.push({ pc: rawPc, clarity: e.clarity, midi: rawMidi });
+    if (pcBuffer.current.length > FREQ_SMOOTH_WINDOW) pcBuffer.current.shift();
+
+    // ── 3) MODA de pitch class ponderada pela clarity ─────────────────────
+    // Em vez de mediana de frequência (que pode cair num Hz intermediário e
+    // dar nota errada por vibrato), conto quantas vezes cada pitch class
+    // aparece ponderando pela clarity. A pc com maior score ganha.
+    const counts = new Array(12).fill(0);
+    for (const b of pcBuffer.current) counts[b.pc] += b.clarity;
+    let modePc: typeof rawPc = rawPc;
+    let maxScore = 0;
+    for (let i = 0; i < 12; i++) {
+      if (counts[i] > maxScore) { maxScore = counts[i]; modePc = i as typeof rawPc; }
+    }
+
+    // ── 4) Histerese anti-vibrato (cents) ─────────────────────────────────
+    // Se o MIDI atual está MUITO próximo da última nota mostrada (< 50 cents),
+    // mantém ela pra evitar flip-flop de vibrato.
     if (lastPitchRef.current !== null && lastMidiRef.current !== null) {
-      const centsDelta = Math.abs(currentMidi - lastMidiRef.current) * 100;
-      if (centsDelta < HYSTERESIS_CENTS && pc !== lastPitchRef.current) {
-        pc = lastPitchRef.current as typeof pc;
+      const centsDelta = Math.abs(rawMidi - lastMidiRef.current) * 100;
+      if (centsDelta < HYSTERESIS_CENTS && modePc !== lastPitchRef.current) {
+        modePc = lastPitchRef.current as typeof rawPc;
       }
     }
 
-    // EMA do MIDI (suaviza "centro" da nota sustentada)
+    // ── 5) EMA do MIDI para centro da nota (anti-vibrato) ─────────────────
     lastMidiRef.current =
       lastMidiRef.current === null
-        ? currentMidi
-        : lastMidiRef.current * 0.6 + currentMidi * 0.4;
+        ? rawMidi
+        : lastMidiRef.current * 0.6 + rawMidi * 0.4;
+
+    // ── 6) Requer 2 FRAMES CONSECUTIVOS da mesma PC antes de "aceitar" ─────
+    // Descarta transientes de glissando entre notas.
+    if (!pcCandidateRef.current || pcCandidateRef.current.pc !== modePc) {
+      pcCandidateRef.current = { pc: modePc, count: 1 };
+      return; // 1ª aparição — NÃO registra ainda
+    }
+    pcCandidateRef.current.count++;
+    if (pcCandidateRef.current.count < 2) return; // ainda não estabilizou
+
+    // ── 7) Nota estabilizada — agora sim registra ──────────────────────────
+    const pc = modePc;
 
     let runLength = 1;
     if (lastPitchRef.current === pc) {
@@ -251,8 +279,7 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       runLength,
     });
 
-    // ── DISPLAY RÁPIDO: setCurrentNote quase instantâneo ──────────────────
-    // Hold de 60ms apenas para evitar flood de re-renders em hardware fraco
+    // ── 8) DISPLAY RÁPIDO (quase instantâneo) ──────────────────────────────
     const disp = noteDisplayRef.current;
     if (!disp || now - disp.setAt >= NOTE_DISPLAY_HOLD_MS) {
       noteDisplayRef.current = { pc, setAt: now };
@@ -667,6 +694,8 @@ export function useKeyDetection(): UseKeyDetectionReturn {
       shadowRef.current = null;
       lastPitchRef.current = null;
       lastMidiRef.current = null;
+      pcBuffer.current = [];
+      pcCandidateRef.current = null;
       audioLevelRef.current = 0;
       setAudioLevel(0);
       noteDisplayRef.current = null;

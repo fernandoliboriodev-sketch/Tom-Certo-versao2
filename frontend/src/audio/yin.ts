@@ -25,7 +25,7 @@ export function yinPitch(buffer: Float32Array, opts: YinOptions): YinResult {
   const {
     sampleRate,
     threshold = 0.10,       // mais restritivo que 0.12 (menos falsos positivos)
-    probabilityMin = 0.80,  // ↓ 0.88 → 0.80 (mais permissivo; hook filtra com 0.82)
+    probabilityMin = 0.55,  // ↓ 0.80 → 0.55 (voz cantada tem muito ar e vibrato)
     minFreq = 65,           // ~Dó2 (baixo do piano, voz masculina grave)
     maxFreq = 1200,         // ~Ré6 (voz feminina aguda, limite razoável)
   } = opts;
