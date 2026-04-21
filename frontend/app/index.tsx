@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Animated, Dimensions,
-  Easing, Platform, Image, Modal, ScrollView, Linking,
+  Easing, Platform, Image, Modal, ScrollView, Linking, Alert, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Updates from 'expo-updates';
 
 import { useKeyDetection } from '../src/hooks/useKeyDetection';
 import { NOTES_BR, NOTES_INTL, formatKeyDisplay, getHarmonicField } from '../src/utils/noteUtils';
@@ -48,7 +49,44 @@ function InitialScreen({
 }) {
   const { logout, session } = useAuth();
   const [modalVisible, setModalVisible] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const prevErr = useRef<string | null>(null);
+
+  // ── Forçar busca de atualização OTA ──────────────────────────────
+  const onCheckUpdate = async () => {
+    if (checkingUpdate) return;
+    if (Platform.OS === 'web' || !Updates.isEnabled) {
+      Alert.alert(
+        'Atualização',
+        'A busca de atualizações só funciona no aplicativo instalado.'
+      );
+      return;
+    }
+    setCheckingUpdate(true);
+    try {
+      const res = await Updates.checkForUpdateAsync();
+      if (res.isAvailable) {
+        await Updates.fetchUpdateAsync();
+        Alert.alert(
+          'Atualização baixada',
+          'Uma nova versão foi baixada com sucesso. O app vai reiniciar agora.',
+          [{ text: 'Reiniciar agora', onPress: () => Updates.reloadAsync().catch(() => {}) }]
+        );
+      } else {
+        Alert.alert(
+          'Você está em dia',
+          'Seu aplicativo já está com a versão mais recente instalada.'
+        );
+      }
+    } catch (e: any) {
+      Alert.alert(
+        'Falha ao buscar atualização',
+        e?.message ? String(e.message) : 'Verifique sua conexão com a internet e tente novamente.'
+      );
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
   useEffect(() => {
     if (errorMessage && errorMessage !== prevErr.current) setModalVisible(true);
     prevErr.current = errorMessage;
@@ -120,10 +158,31 @@ function InitialScreen({
         </TouchableOpacity>
       ) : null}
 
-      <TouchableOpacity testID="logout-btn" style={ss.logoutBtn} onPress={logout} activeOpacity={0.6}>
-        <Ionicons name="log-out-outline" size={13} color={C.text3} />
-        <Text style={ss.logoutTxt}>Sair{session?.customer_name ? ` · ${session.customer_name}` : ''}</Text>
-      </TouchableOpacity>
+      <View style={ss.footerRow}>
+        <TouchableOpacity testID="logout-btn" style={ss.footerBtn} onPress={logout} activeOpacity={0.6}>
+          <Ionicons name="log-out-outline" size={13} color={C.text3} />
+          <Text style={ss.logoutTxt}>Sair{session?.customer_name ? ` · ${session.customer_name}` : ''}</Text>
+        </TouchableOpacity>
+
+        <View style={ss.footerDivider} />
+
+        <TouchableOpacity
+          testID="check-update-btn"
+          style={ss.footerBtn}
+          onPress={onCheckUpdate}
+          activeOpacity={0.6}
+          disabled={checkingUpdate}
+        >
+          {checkingUpdate ? (
+            <ActivityIndicator color={C.text3} size="small" />
+          ) : (
+            <Ionicons name="cloud-download-outline" size={13} color={C.text3} />
+          )}
+          <Text style={ss.logoutTxt}>
+            {checkingUpdate ? 'Buscando...' : 'Buscar atualização'}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       <MicNoticeModal
         visible={modalVisible}
@@ -433,6 +492,26 @@ const ss = StyleSheet.create({
   },
   errorTxt: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12, color: C.red, lineHeight: 16 },
   logoutBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 8, paddingHorizontal: 16 },
+  footerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    gap: 4,
+  },
+  footerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  footerDivider: {
+    width: 1,
+    height: 12,
+    backgroundColor: C.borderStrong,
+    marginHorizontal: 2,
+  },
   logoutTxt: { fontFamily: 'Manrope_500Medium', fontSize: 11, color: C.text3, letterSpacing: 0.4 },
 
   // ACTIVE
