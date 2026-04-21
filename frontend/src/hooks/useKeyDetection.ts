@@ -1,25 +1,15 @@
 /**
- * useKeyDetection v5 — DEFINITIVO: Phrase-Based Detector
+ * useKeyDetection v5.1 — Phrase-Based Detector (robusto)
  *
- * ════════════════════════════════════════════════════════════════════════
- * Abordagem: a tonalidade é determinada pela RESOLUÇÃO DAS FRASES,
- * não pela distribuição estatística das notas. Resolve a confusão
- * sistemática entre tom maior e seu relativo menor (ex: D Major ↔ F#m).
+ * CORREÇÃO v5.1: não depende de "silêncio real" (RMS baixo). Usa "ausência
+ * de voz" (frame sem pitch válido) como silêncio — funciona mesmo em ambiente
+ * ruidoso. Adiciona múltiplos gatilhos pra fechar frase:
+ *   1) Ausência de voz ≥ 250ms (pausa natural)
+ *   2) Nota sustentada ≥ 1200ms após ≥ 2 notas distintas (fim de legato)
+ *   3) Frase com 4+ notas e duração ≥ 3s (frase longa)
+ *   4) Timeout de 8s sem fechar frase (safety net)
  *
- * Pipeline:
- *  1) Frame → pitch class (com filtro mediana + correção de oitava)
- *  2) Frames consecutivos → nota (agrupa run-length)
- *  3) Notas separadas por silêncio ≥ 300ms → frase
- *  4) Cada frase VOTA na tônica (cadência 5x, first 2x, longest 1.5x)
- *  5) Qualidade (maj/min) vem APÓS tônica estável, via 3ª grade
- *  6) Estabilidade: tally decai 15% por frase (recency > histórico)
- *
- * Estados (4):
- *  - listening: 0 frases
- *  - probable: 1 frase com cadência clara
- *  - confirmed: 2+ frases concordam
- *  - definitive: 3+ frases + qualidade clara
- * ════════════════════════════════════════════════════════════════════════
+ * Também afrouxa filtros pra capturar mais notas da voz real.
  */
 
 import { useRef, useState, useCallback, useEffect } from 'react';
@@ -31,29 +21,31 @@ import {
   KeyDetectionState,
   DetectedNoteEvent,
   DetectionStage,
-  SILENCE_END_PHRASE_MS,
-  LEGATO_SUSTAINED_MS,
-  MIN_NOTE_DUR_MS,
 } from '../utils/phraseKeyDetector';
 import { usePitchEngine } from '../audio/usePitchEngine';
 import type { PitchEvent, PitchErrorReason } from '../audio/types';
 import { frequencyToMidi, midiToPitchClass } from '../utils/noteUtils';
 
-// ─── Filtros de qualidade (calibrados pra voz cantada) ────────────
-const MIN_RMS = 0.010;
-const MIN_CLARITY = 0.55;
-const MEDIAN_WINDOW = 5;       // filtro mediana sobre 5 frames consecutivos
-const MIN_COMMIT_FRAMES = 4;   // precisa de 4 frames iguais pra commitar uma nota
+// ─── Filtros de frame (afrouxados pra voz real) ───────────────
+const MIN_RMS = 0.008;             // ↓ era 0.010
+const MIN_CLARITY = 0.50;          // ↓ era 0.55
+const MEDIAN_WINDOW = 3;           // ↓ era 5 (menos smoothing, mais responsivo)
 
-// ─── Tipos legados para compatibilidade UI ────────────────────────
+// ─── Commit de nota ──────────────────────────────────────────
+const MIN_COMMIT_FRAMES = 2;       // ↓ era 4 (~46ms — ainda filtra ruído)
+const MIN_NOTE_DUR_MS_LOCAL = 80;  // ↓ era 120 — notas curtas contam
+
+// ─── Fechamento de frase (múltiplos gatilhos) ────────────────
+const VOICED_GAP_MS = 250;         // ausência de voz ≥ 250ms = fim de frase
+const LEGATO_SUSTAIN_MS = 1200;    // nota mantida ≥ 1.2s (após 2+ notas) = fim
+const LONG_PHRASE_NOTES = 5;       // ≥ 5 notas distintas
+const LONG_PHRASE_DUR_MS = 3000;   // e dur ≥ 3s = fim
+const SAFETY_TIMEOUT_MS = 8000;    // safety net: 8s sem fechar → força fim
+
+// ─── Tipos de compatibilidade ────────────────────────────────
 export type DetectionState =
-  | 'idle'
-  | 'listening'
-  | 'analyzing'
-  | 'provisional'
-  | 'confirmed'
-  | 'change_possible';
-
+  | 'idle' | 'listening' | 'analyzing'
+  | 'provisional' | 'confirmed' | 'change_possible';
 export type KeyTier = 'provisional' | 'confirmed' | null;
 
 export interface KeyResult {
@@ -78,7 +70,6 @@ export interface UseKeyDetectionReturn {
   errorMessage: string | null;
   errorReason: PitchErrorReason | null;
   softInfo: string | null;
-  // Novo: estado do detector por frases
   phraseStage: DetectionStage;
   phrasesAnalyzed: number;
   start: () => Promise<boolean>;
@@ -87,7 +78,6 @@ export interface UseKeyDetectionReturn {
 }
 
 export function useKeyDetection(): UseKeyDetectionReturn {
-  // ── Estado pública ────────────────────────────────────────────
   const [currentNote, setCurrentNote] = useState<number | null>(null);
   const [recentNotes, setRecentNotes] = useState<number[]>([]);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -97,168 +87,165 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const [softInfo, setSoftInfo] = useState<string | null>(null);
   const [keyState, setKeyState] = useState<KeyDetectionState>(createInitialState());
 
-  // ── Engine de pitch ───────────────────────────────────────────
   const engine = usePitchEngine();
 
-  // ── Refs para frame processing (evita re-render a cada frame) ─
-  const startTimeRef = useRef<number>(0);                 // epoch quando start() foi chamado
-  const medianBufferRef = useRef<number[]>([]);           // últimos 5 pitch classes
-  const currentNotePcRef = useRef<number | null>(null);   // pitch class da nota atual
-  const currentNoteStartRef = useRef<number>(0);          // quando começou a nota atual
-  const currentNoteFramesRef = useRef<number>(0);         // quantos frames já acumulou
-  const currentNoteRmsSumRef = useRef<number>(0);
-  const currentNoteMidiSumRef = useRef<number>(0);
-  const currentNoteCommittedRef = useRef<boolean>(false); // já entrou na frase?
-  const lastFrameTimeRef = useRef<number>(0);             // último frame (com pitch válido)
-  const lastSilenceStartRef = useRef<number | null>(null); // início do silêncio atual
-  const phraseNotesRef = useRef<DetectedNoteEvent[]>([]); // notas acumulando na frase atual
-  const phraseStartRef = useRef<number>(0);               // início da frase atual
+  // ── Refs de processamento ────────────────────────────────
+  const startTimeRef = useRef<number>(0);
+  const medianBufRef = useRef<number[]>([]);
+  const curPcRef = useRef<number | null>(null);
+  const curStartRef = useRef<number>(0);
+  const curFramesRef = useRef<number>(0);
+  const curRmsSumRef = useRef<number>(0);
+  const curMidiSumRef = useRef<number>(0);
+  const curCommittedRef = useRef<boolean>(false);
+  const lastVoicedTimeRef = useRef<number>(0);
+  const phraseNotesRef = useRef<DetectedNoteEvent[]>([]);
+  const phraseStartTimeRef = useRef<number>(0);
 
-  // ── Helpers ───────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────
   const addRecentNote = useCallback((pc: number) => {
     setRecentNotes(prev => {
-      if (prev[prev.length - 1] === pc) return prev; // não duplica consecutivas
+      if (prev[prev.length - 1] === pc) return prev;
       const next = [...prev, pc];
-      return next.length > 5 ? next.slice(-5) : next;
+      return next.length > 6 ? next.slice(-6) : next;
     });
   }, []);
 
-  // Commita a nota atual ao buffer de frase (se válida)
-  const commitCurrentNoteToPhrase = useCallback((now: number) => {
+  // Commita a nota em curso no buffer da frase
+  const commitCurNote = useCallback((now: number): boolean => {
     if (
-      currentNotePcRef.current === null ||
-      currentNoteCommittedRef.current ||
-      currentNoteFramesRef.current < MIN_COMMIT_FRAMES
-    ) return;
+      curPcRef.current === null ||
+      curCommittedRef.current ||
+      curFramesRef.current < MIN_COMMIT_FRAMES
+    ) return false;
 
-    const durMs = now - currentNoteStartRef.current;
-    if (durMs < MIN_NOTE_DUR_MS) return;
+    const durMs = now - curStartRef.current;
+    if (durMs < MIN_NOTE_DUR_MS_LOCAL) return false;
 
-    const rmsAvg = currentNoteRmsSumRef.current / currentNoteFramesRef.current;
-    const midiAvg = currentNoteMidiSumRef.current / currentNoteFramesRef.current;
-    const ev: DetectedNoteEvent = {
-      pitchClass: currentNotePcRef.current,
+    const rmsAvg = curRmsSumRef.current / curFramesRef.current;
+    const midiAvg = curMidiSumRef.current / curFramesRef.current;
+    phraseNotesRef.current.push({
+      pitchClass: curPcRef.current,
       midi: Math.round(midiAvg),
-      timestamp: currentNoteStartRef.current - startTimeRef.current,
+      timestamp: curStartRef.current - startTimeRef.current,
       durMs,
       rmsAvg,
-    };
-    phraseNotesRef.current.push(ev);
-    currentNoteCommittedRef.current = true;
+    });
+    curCommittedRef.current = true;
+    return true;
   }, []);
 
-  // Fecha frase atual → envia pro detector
-  const closePhraseIfValid = useCallback((now: number) => {
-    // Tenta commitar nota atual primeiro
-    commitCurrentNoteToPhrase(now);
-
+  // Fecha frase e envia pra o detector
+  const closePhrase = useCallback((now: number, reason: string) => {
+    commitCurNote(now);
     if (phraseNotesRef.current.length === 0) return;
 
-    const phrase = buildPhrase(phraseNotesRef.current);
+    const notes = phraseNotesRef.current;
     phraseNotesRef.current = [];
+    phraseStartTimeRef.current = 0;
 
+    const phrase = buildPhrase(notes);
     if (phrase) {
+      setSoftInfo(`Frase capturada (${reason}): ${notes.length} notas`);
       setKeyState(prev => ingestPhrase(prev, phrase));
+    } else {
+      setSoftInfo(`Frase descartada (${reason}): apenas ${notes.length} notas curtas`);
     }
-  }, [commitCurrentNoteToPhrase]);
+  }, [commitCurNote]);
 
-  // ── Callback de pitch — chamado em cada frame de áudio ───────
+  // ── Callback de pitch ────────────────────────────────────
   const onPitch = useCallback((ev: PitchEvent) => {
     const now = Date.now();
-
-    // ── Audio level (para visualizer) ──
     setAudioLevel(Math.min(1, ev.rms * 8));
 
-    // ── Checa se é silêncio (RMS baixo ou clarity ruim) ──
-    const isVoiced = ev.rms >= MIN_RMS && ev.clarity >= MIN_CLARITY && ev.frequency > 60 && ev.frequency < 2000;
+    const isVoiced =
+      ev.rms >= MIN_RMS &&
+      ev.clarity >= MIN_CLARITY &&
+      ev.frequency >= 65 &&
+      ev.frequency <= 2000;
 
     if (!isVoiced) {
-      // Marca início do silêncio se ainda não marcado
-      if (lastSilenceStartRef.current === null) {
-        lastSilenceStartRef.current = now;
-      } else {
-        const silenceDur = now - lastSilenceStartRef.current;
-        if (silenceDur >= SILENCE_END_PHRASE_MS) {
-          // Silêncio suficiente → fecha frase
-          closePhraseIfValid(now);
-          // Reset da nota atual
-          currentNotePcRef.current = null;
-          currentNoteFramesRef.current = 0;
-          currentNoteCommittedRef.current = false;
+      // Sem voz detectada
+      if (lastVoicedTimeRef.current > 0) {
+        const gap = now - lastVoicedTimeRef.current;
+        if (gap >= VOICED_GAP_MS) {
+          // Fim de frase por pausa
+          closePhrase(now, 'pausa');
+          curPcRef.current = null;
+          curFramesRef.current = 0;
+          curCommittedRef.current = false;
           setCurrentNote(null);
+          lastVoicedTimeRef.current = 0;
         }
       }
       return;
     }
 
-    // Tem voz: reset do silêncio
-    lastSilenceStartRef.current = null;
-    lastFrameTimeRef.current = now;
+    lastVoicedTimeRef.current = now;
 
-    // ── Pitch class do frame ──
+    // Pitch class do frame
     const midi = frequencyToMidi(ev.frequency);
     const rawPc = midiToPitchClass(midi);
 
-    // ── Filtro mediana (remove pitch classes isoladas/anômalas) ──
-    medianBufferRef.current.push(rawPc);
-    if (medianBufferRef.current.length > MEDIAN_WINDOW) medianBufferRef.current.shift();
+    // Mediana (3 frames)
+    medianBufRef.current.push(rawPc);
+    if (medianBufRef.current.length > MEDIAN_WINDOW) medianBufRef.current.shift();
     const counts = new Array(12).fill(0);
-    for (const pc of medianBufferRef.current) counts[pc]++;
-    let smoothedPc: number = rawPc;
-    let topCount = 0;
-    for (let i = 0; i < 12; i++) {
-      if (counts[i] > topCount) { topCount = counts[i]; smoothedPc = i; }
-    }
+    for (const pc of medianBufRef.current) counts[pc]++;
+    let pc: number = rawPc;
+    let top = 0;
+    for (let i = 0; i < 12; i++) if (counts[i] > top) { top = counts[i]; pc = i; }
 
-    // ── Atualiza UI em tempo real ──
-    setCurrentNote(smoothedPc);
+    setCurrentNote(pc);
 
-    // ── Agrupa frames em "nota" (run-length com histerese) ──
-    if (currentNotePcRef.current === smoothedPc) {
-      // Mesma nota — extende duração
-      currentNoteFramesRef.current++;
-      currentNoteRmsSumRef.current += ev.rms;
-      currentNoteMidiSumRef.current += midi;
+    if (curPcRef.current === pc) {
+      curFramesRef.current++;
+      curRmsSumRef.current += ev.rms;
+      curMidiSumRef.current += midi;
 
-      // ── Fallback legato: nota muito sustentada → fecha frase (se há ≥ 1 outra nota)
-      const noteDur = now - currentNoteStartRef.current;
+      // Gatilho 2: nota muito sustentada (legato) após ≥ 2 notas
+      const dur = now - curStartRef.current;
       if (
-        noteDur >= LEGATO_SUSTAINED_MS &&
-        !currentNoteCommittedRef.current &&
-        phraseNotesRef.current.length >= 1
+        dur >= LEGATO_SUSTAIN_MS &&
+        !curCommittedRef.current &&
+        phraseNotesRef.current.length >= 2
       ) {
-        commitCurrentNoteToPhrase(now);
-        closePhraseIfValid(now);
+        closePhrase(now, 'legato');
       }
     } else {
-      // Nota nova: commita a anterior e inicia nova
-      commitCurrentNoteToPhrase(now);
-      if (currentNotePcRef.current !== null && currentNoteCommittedRef.current) {
-        addRecentNote(currentNotePcRef.current);
+      // Nota nova
+      if (commitCurNote(now) && curPcRef.current !== null) {
+        addRecentNote(curPcRef.current);
       }
-      currentNotePcRef.current = smoothedPc;
-      currentNoteStartRef.current = now;
-      currentNoteFramesRef.current = 1;
-      currentNoteRmsSumRef.current = ev.rms;
-      currentNoteMidiSumRef.current = midi;
-      currentNoteCommittedRef.current = false;
-      if (phraseStartRef.current === 0) phraseStartRef.current = now;
-    }
-  }, [addRecentNote, closePhraseIfValid, commitCurrentNoteToPhrase]);
+      curPcRef.current = pc;
+      curStartRef.current = now;
+      curFramesRef.current = 1;
+      curRmsSumRef.current = ev.rms;
+      curMidiSumRef.current = midi;
+      curCommittedRef.current = false;
+      if (phraseStartTimeRef.current === 0) phraseStartTimeRef.current = now;
 
-  // ── Callback de erro do engine ────────────────────────────────
+      // Gatilho 3: frase longa (5+ notas + 3s)
+      const phraseDur = now - phraseStartTimeRef.current;
+      if (
+        phraseNotesRef.current.length >= LONG_PHRASE_NOTES - 1 &&
+        phraseDur >= LONG_PHRASE_DUR_MS
+      ) {
+        closePhrase(now, 'frase longa');
+      }
+    }
+  }, [addRecentNote, commitCurNote, closePhrase]);
+
   const onError = useCallback((msg: string, reason: PitchErrorReason) => {
     setErrorMessage(msg);
     setErrorReason(reason);
     setIsRunning(false);
   }, []);
 
-  // ── Soft info (do engine) ─────────────────────────────────────
   useEffect(() => {
     if (engine.setSoftInfoHandler) engine.setSoftInfoHandler(setSoftInfo);
   }, [engine]);
 
-  // ── START ────────────────────────────────────────────────────
   const start = useCallback(async (): Promise<boolean> => {
     if (isRunning) return true;
     setErrorMessage(null);
@@ -268,22 +255,19 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     setRecentNotes([]);
     setAudioLevel(0);
     setKeyState(createInitialState());
-    // Reset refs
     startTimeRef.current = Date.now();
-    medianBufferRef.current = [];
-    currentNotePcRef.current = null;
-    currentNoteFramesRef.current = 0;
-    currentNoteCommittedRef.current = false;
-    lastSilenceStartRef.current = null;
+    medianBufRef.current = [];
+    curPcRef.current = null;
+    curFramesRef.current = 0;
+    curCommittedRef.current = false;
+    lastVoicedTimeRef.current = 0;
     phraseNotesRef.current = [];
-    phraseStartRef.current = 0;
-
+    phraseStartTimeRef.current = 0;
     const ok = await engine.start(onPitch, onError);
     if (ok) setIsRunning(true);
     return ok;
   }, [engine, isRunning, onError, onPitch]);
 
-  // ── STOP ─────────────────────────────────────────────────────
   const stop = useCallback(() => {
     engine.stop().catch(() => {});
     setIsRunning(false);
@@ -291,7 +275,6 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     setAudioLevel(0);
   }, [engine]);
 
-  // ── RESET ────────────────────────────────────────────────────
   const reset = useCallback(() => {
     stop();
     setKeyState(createInitialState());
@@ -301,75 +284,79 @@ export function useKeyDetection(): UseKeyDetectionReturn {
     setSoftInfo(null);
   }, [stop]);
 
-  // ── App state: para gravação quando app vai pra background ───
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
-      if (next !== 'active' && isRunning) {
-        stop();
-      }
+      if (next !== 'active' && isRunning) stop();
     });
     return () => sub.remove();
   }, [isRunning, stop]);
 
-  // ── Watchdog: se não há frames há > 5s, força fechar frase ──
+  // ── Watchdog: safety timeout + detecção passiva de pausa ──
+  // Usa setInterval pra garantir que frases longas sem mudança de nota
+  // ainda assim fechem (mesmo se não chegarem frames não-voiced).
   useEffect(() => {
     if (!isRunning) return;
     const t = setInterval(() => {
       const now = Date.now();
-      if (lastFrameTimeRef.current > 0 && now - lastFrameTimeRef.current > 5000) {
-        closePhraseIfValid(now);
+      // Safety timeout: frase aberta há muito tempo
+      if (phraseStartTimeRef.current > 0 && now - phraseStartTimeRef.current > SAFETY_TIMEOUT_MS) {
+        if (phraseNotesRef.current.length >= 2) {
+          closePhrase(now, 'timeout');
+        }
       }
-    }, 1000);
+      // Gap de voz passivo: se último frame voiced foi há ≥ VOICED_GAP_MS
+      // e temos notas acumuladas, fecha
+      if (
+        lastVoicedTimeRef.current > 0 &&
+        now - lastVoicedTimeRef.current >= VOICED_GAP_MS &&
+        phraseNotesRef.current.length >= 2
+      ) {
+        closePhrase(now, 'pausa-passiva');
+        lastVoicedTimeRef.current = 0;
+      }
+    }, 200);
     return () => clearInterval(t);
-  }, [isRunning, closePhraseIfValid]);
+  }, [isRunning, closePhrase]);
 
-  // ── Mapeamento do estado interno pra API compatível com UI ───
+  // ── Mapping pra API compatível ───────────────────────────
   const detectionState: DetectionState = (() => {
     if (!isRunning) return 'idle';
     switch (keyState.stage) {
       case 'listening': return 'listening';
       case 'probable': return 'provisional';
-      case 'confirmed': return 'provisional'; // Confirmed ainda mostra como "refinando"
+      case 'confirmed': return 'provisional';
       case 'definitive': return 'confirmed';
     }
   })();
 
-  const keyTier: KeyTier = (() => {
-    if (keyState.stage === 'listening') return null;
-    if (keyState.stage === 'definitive') return 'confirmed';
-    if (keyState.stage === 'confirmed') return 'confirmed'; // mostra confirmed em stage confirmed/definitive
-    return 'provisional';
-  })();
+  const keyTier: KeyTier =
+    keyState.stage === 'listening' ? null :
+    keyState.stage === 'definitive' ? 'confirmed' :
+    keyState.stage === 'confirmed' ? 'confirmed' : 'provisional';
 
   const currentKey: KeyResult | null =
     keyState.currentTonicPc !== null && keyState.quality
-      ? {
-          root: keyState.currentTonicPc,
-          quality: keyState.quality,
-          confidence: keyState.tonicConfidence,
-        }
+      ? { root: keyState.currentTonicPc, quality: keyState.quality, confidence: keyState.tonicConfidence }
       : null;
 
   const statusMessage: string = (() => {
     if (!isRunning) return 'Pronto para detectar';
     if (keyState.stage === 'listening') return 'Escutando...';
     if (keyState.stage === 'probable') return 'Tônica provável';
-    if (keyState.stage === 'confirmed') return 'Tônica confirmada — definindo modo';
+    if (keyState.stage === 'confirmed') return 'Tônica confirmada';
     return 'Tom definitivo';
   })();
-
-  const isStable = keyState.stage === 'definitive';
 
   return {
     detectionState,
     currentKey,
     keyTier,
     liveConfidence: keyState.tonicConfidence,
-    changeSuggestion: null, // Não usado no novo modelo (contradição reduz confiança em vez de sugerir mudança)
+    changeSuggestion: null,
     currentNote,
     recentNotes,
     audioLevel,
-    isStable,
+    isStable: keyState.stage === 'definitive',
     statusMessage,
     isRunning,
     isSupported: engine.isSupported,

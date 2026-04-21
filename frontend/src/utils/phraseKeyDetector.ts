@@ -22,12 +22,12 @@
 export const NOTE_NAMES_BR = ['Dó', 'Dó#', 'Ré', 'Ré#', 'Mi', 'Fá', 'Fá#', 'Sol', 'Sol#', 'Lá', 'Lá#', 'Si'];
 
 // ─── Constantes de segmentação ────────────────────────────────────────
-export const SILENCE_END_PHRASE_MS = 300;   // silêncio pra fechar frase
-export const LEGATO_SUSTAINED_MS = 1500;    // fallback: nota sustentada = frase
-export const MIN_NOTE_DUR_MS = 120;         // nota precisa durar ≥ isso pra contar
-export const MIN_PHRASE_DUR_MS = 500;       // frase precisa ter ≥ isso
+export const SILENCE_END_PHRASE_MS = 250;   // silêncio pra fechar frase
+export const LEGATO_SUSTAINED_MS = 1200;    // fallback: nota sustentada = frase
+export const MIN_NOTE_DUR_MS = 80;          // nota precisa durar ≥ isso pra contar
+export const MIN_PHRASE_DUR_MS = 400;       // frase precisa ter ≥ isso
 export const MIN_NOTES_PER_PHRASE = 2;
-export const MIN_CADENCE_DUR_MS = 220;      // última nota precisa ≥ isso pra ser cadência
+export const MIN_CADENCE_DUR_MS = 180;      // última nota precisa ≥ isso pra ser cadência
 
 // ─── Pesos de votação ─────────────────────────────────────────────────
 export const VOTE_CADENCE = 5.0;
@@ -36,10 +36,10 @@ export const VOTE_LONGEST = 1.5;
 
 // ─── Estabilidade / decay ─────────────────────────────────────────────
 export const TALLY_DECAY = 0.85;            // tally antigo mantém 85% a cada nova frase
-export const STAGE_PROBABLE_MIN_CONF = 0.20;
-export const STAGE_CONFIRMED_MIN_CONF = 0.40;
-export const STAGE_DEFINITIVE_MIN_CONF = 0.55;
-export const STAGE_DEFINITIVE_MIN_QUALITY_MARGIN = 1.3;
+export const STAGE_PROBABLE_MIN_CONF = 0.18;
+export const STAGE_CONFIRMED_MIN_CONF = 0.32;
+export const STAGE_DEFINITIVE_MIN_CONF = 0.45;
+export const STAGE_DEFINITIVE_MIN_QUALITY_MARGIN = 1.15;
 
 export type DetectionStage = 'listening' | 'probable' | 'confirmed' | 'definitive';
 
