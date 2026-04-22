@@ -167,7 +167,7 @@ function simulate(
   phraseCountToDefinitive: number | null;
 } {
   let state: KeyDetectionState = createInitialState();
-  const tempBuffer = new TemporalBuffer(5000);
+  const tempBuffer = new TemporalBuffer(8000); // v3: alinhado com produção
 
   const stagePerPhrase: string[] = [];
   const confidencePerPhrase: number[] = [];
@@ -247,6 +247,67 @@ function simulate(
   };
 }
 
+// ----- Hino em Fá# Maior com ÊNFASE em C# (V) e G# (II) -----
+// Caso adversarial: simula o comportamento real do usuário onde notas
+// do grau V e II aparecem com peso pesado, mas cadências RESOLVEM em F#.
+function hinoFsMajorAdversarial(): MelodicNote[][] {
+  const F = 6, G = 8, A = 10, B = 11, C = 1, D = 3, E = 5; // notas de F# Maior
+  return [
+    // Frase 1: V sustentada + resolução
+    [
+      { pc: C, durMs: 400 },   // V forte
+      { pc: C, durMs: 300 },   // V repete
+      { pc: B, durMs: 250 },
+      { pc: A, durMs: 300 },
+      { pc: F, durMs: 700 },   // I (repouso)
+    ],
+    // Frase 2: ênfase em G# (II) + cadência em I
+    [
+      { pc: F, durMs: 280 },
+      { pc: G, durMs: 350 },   // II forte
+      { pc: A, durMs: 260 },
+      { pc: G, durMs: 320 },   // II forte de novo
+      { pc: F, durMs: 700 },   // I (repouso)
+    ],
+    // Frase 3: motivo com C# sustentado longo (V)
+    [
+      { pc: A, durMs: 280 },
+      { pc: C, durMs: 500 },   // V muito longo
+      { pc: D, durMs: 280 },
+      { pc: B, durMs: 260 },
+      { pc: A, durMs: 280 },
+      { pc: F, durMs: 650 },   // I (repouso)
+    ],
+    // Frase 4: pico em G#, mas resolve I
+    [
+      { pc: F, durMs: 260 },
+      { pc: A, durMs: 260 },
+      { pc: G, durMs: 400 },   // II sustentada
+      { pc: A, durMs: 260 },
+      { pc: G, durMs: 260 },
+      { pc: F, durMs: 650 },   // I (repouso)
+    ],
+    // Frase 5: cadência perfeita V-I com leading tone
+    [
+      { pc: C, durMs: 300 },   // V
+      { pc: D, durMs: 260 },
+      { pc: C, durMs: 300 },   // V
+      { pc: E, durMs: 200 },   // leading tone (só F# Maior tem, não C#m nem G#m!)
+      { pc: F, durMs: 700 },   // I (resolução)
+    ],
+    // Frase 6: melismática com G# e C# mas resolve I
+    [
+      { pc: F, durMs: 260 },
+      { pc: G, durMs: 260 },
+      { pc: A, durMs: 260 },
+      { pc: C, durMs: 280 },
+      { pc: G, durMs: 260 },
+      { pc: A, durMs: 260 },
+      { pc: F, durMs: 650 },   // I
+    ],
+  ];
+}
+
 // ── Testes ────────────────────────────────────────────────────────────
 interface TestCase {
   name: string;
@@ -313,6 +374,13 @@ const testCases: TestCase[] = [
     expectedKey: 'Fá# menor',
     expectedTonicPc: 6,
     expectedQuality: 'minor',
+  },
+  {
+    name: 'Fá# Maior HINO (ênfase em C#/G# — adversarial)',
+    melodies: hinoFsMajorAdversarial(),
+    expectedKey: 'Fá# Maior',
+    expectedTonicPc: 6,
+    expectedQuality: 'major',
   },
 ];
 

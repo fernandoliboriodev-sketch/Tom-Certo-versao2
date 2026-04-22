@@ -27,6 +27,7 @@ import {
   buildWeightedHistogram,
   rankAllKeys,
   agreementMultiplier,
+  isInTop3,
   NoteSample,
 } from '../utils/tonalScorer';
 import { usePitchEngine } from '../audio/usePitchEngine';
@@ -111,8 +112,8 @@ export function useKeyDetection(): UseKeyDetectionReturn {
   const lastVoicedTimeRef = useRef<number>(0);
   const phraseNotesRef = useRef<DetectedNoteEvent[]>([]);
   const phraseStartTimeRef = useRef<number>(0);
-  // Buffer temporal deslizante (5s) — alimenta o scorer contextual
-  const tempBufferRef = useRef<TemporalBuffer>(new TemporalBuffer(5000));
+  // Buffer temporal deslizante (8s v3 — captura arco musical maior) — alimenta o scorer contextual
+  const tempBufferRef = useRef<TemporalBuffer>(new TemporalBuffer(8000));
 
   // ── Helpers ──────────────────────────────────────────────
   const addRecentNote = useCallback((pc: number) => {
@@ -177,6 +178,11 @@ export function useKeyDetection(): UseKeyDetectionReturn {
         //   0.15×aderência + 0.30×perfilKrumhansl + 0.30×resolução
         //   + 0.15×forçaTônica + 0.10×estabilidade - 0.20×penalidade
         // Com tiebreaker especial para pares relativos maj/min.
+        //
+        // v3: proteção top-3 — se a tônica do phrase-voting está entre os
+        // top-3 candidatos do scorer, eleva o agreementMul para no mínimo 0.8.
+        // Isso evita que um grau diatônico forte momentâneo (V, ii) rebaixe
+        // a convicção quando a tônica ainda é "razoavelmente certa".
         try {
           const samples = tempBufferRef.current.getSamples();
           if (samples.length >= 3 && next.phrases.length >= 1) {
@@ -184,11 +190,14 @@ export function useKeyDetection(): UseKeyDetectionReturn {
             const ranked = rankAllKeys(hist, samples, next.phrases);
             const scorerWinner = ranked[0];
             if (next.currentTonicPc !== null && next.quality) {
-              const mul = agreementMultiplier(
+              let mul = agreementMultiplier(
                 next.currentTonicPc,
                 next.quality,
                 scorerWinner
               );
+              // Proteção top-3
+              const t3 = isInTop3(next.currentTonicPc, next.quality, ranked);
+              if (t3.inTop3 && mul < 0.8) mul = 0.8;
               setAgreementMul(mul);
             }
           }

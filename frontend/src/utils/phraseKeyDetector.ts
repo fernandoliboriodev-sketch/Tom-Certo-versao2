@@ -35,14 +35,25 @@ export const VOTE_FIRST_STABLE = 2.0;
 export const VOTE_LONGEST = 1.0;      // antes 1.5 — mais longa nem sempre é tônica
 
 // ─── Estabilidade (MUITO MAIS RIGOROSA) ────────────────────────────────
-export const TALLY_DECAY = 0.90;               // preserva mais histórico (antes 0.85)
+export const TALLY_DECAY = 0.93;               // v3: preserva mais histórico (antes 0.90)
 export const STAGE_PROBABLE_MIN_CONF = 0.35;
-export const STAGE_CONFIRMED_MIN_CONF = 0.78;  // antes 0.65
-export const STAGE_DEFINITIVE_MIN_CONF = 0.92; // antes 0.82
-export const STAGE_DEFINITIVE_MIN_QUALITY_MARGIN = 1.35; // antes 1.15
-export const STAGE_CONFIRMED_MIN_PHRASES = 3;  // antes 2
-export const STAGE_DEFINITIVE_MIN_PHRASES = 4; // antes 3
-export const HYSTERESIS_FACTOR = 2.0;          // antes 1.5
+export const STAGE_CONFIRMED_MIN_CONF = 0.55;  // v3: recalibrado p/ conviction real (antes 0.78)
+export const STAGE_DEFINITIVE_MIN_CONF = 0.75; // v3: recalibrado (antes 0.92)
+export const STAGE_DEFINITIVE_MIN_QUALITY_MARGIN = 1.35;
+export const STAGE_CONFIRMED_MIN_PHRASES = 3;
+export const STAGE_DEFINITIVE_MIN_PHRASES = 4;
+
+// v3: Histerese GRADUAL por stage (antes atuava só em confirmed/definitive)
+export const HYSTERESIS_BY_STAGE: Record<DetectionStage, number> = {
+  listening: 1.0,   // livre (sem tônica ainda)
+  probable: 1.4,    // NOVO — protege desde cedo contra graus diatônicos
+  confirmed: 2.0,
+  definitive: 2.5,  // antes 2.0 — ainda mais resistente
+};
+
+// v3: Bônus cumulativo por frases consecutivas concordantes
+export const CONSECUTIVE_BONUS_PER_PHRASE = 0.15;
+export const CONSECUTIVE_BONUS_CAP = 5;        // até 5 frases (+75% máx)
 
 export type DetectionStage = 'listening' | 'probable' | 'confirmed' | 'definitive';
 
@@ -73,6 +84,7 @@ export interface KeyDetectionState {
   quality: 'major' | 'minor' | null;
   qualityMargin: number;        // razão M3/m3 ou m3/M3
   stage: DetectionStage;
+  consecutiveAgreements: number; // v3: nº de frases seguidas que resolveram na tônica atual
 }
 
 // ── Inicialização ────────────────────────────────────────────────────
@@ -86,6 +98,7 @@ export function createInitialState(): KeyDetectionState {
     quality: null,
     qualityMargin: 0,
     stage: 'listening',
+    consecutiveAgreements: 0,
   };
 }
 
@@ -237,21 +250,44 @@ function determineStage(s: {
   return 'listening';
 }
 
-// ── Integra uma nova frase ao estado ────────────────────────────────
-// Esta é a função central: recebe phrase, atualiza tally com decay,
-// calcula tônica atual, confiança, qualidade e stage.
+// ── Integra uma nova frase ao estado (v3) ───────────────────────────
+// Mudanças v3:
+//   • Histerese GRADUAL por stage (protege desde "probable", não só confirmed)
+//   • Bônus cumulativo para tônica quando frases consecutivas concordam
+//   • Confiança baseada em EVIDÊNCIAS REAIS (não piso cosmético por stage):
+//     combina margem, frases analisadas, concordância consecutiva e peso
+//     absoluto acumulado.
 export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetectionState {
-  // 1) Decay do tally anterior (recency bias — frases antigas perdem peso)
+  // 1) Decay do tally anterior
   const decayed = state.tonicTally.map(v => v * TALLY_DECAY);
 
   // 2) Adiciona votos da nova frase
   const votes = votesFromPhrase(phrase);
   const newTally = decayed.map((v, i) => v + votes[i]);
 
-  // 3) Atualiza histograma de duração (para análise de qualidade)
+  // 3) BÔNUS DE CONCORDÂNCIA CONSECUTIVA (v3)
+  // Se a frase atual resolve na MESMA tônica que as últimas N frases consecutivas,
+  // amplifica o peso dessa tônica — reflete convicção musical cumulativa.
+  let consecutiveAgreements = state.consecutiveAgreements;
+  if (
+    state.currentTonicPc !== null &&
+    phrase.lastSustainedPc === state.currentTonicPc
+  ) {
+    consecutiveAgreements += 1;
+    const bonus = 1 + CONSECUTIVE_BONUS_PER_PHRASE * Math.min(consecutiveAgreements, CONSECUTIVE_BONUS_CAP);
+    newTally[state.currentTonicPc] *= bonus;
+  } else if (
+    phrase.lastSustainedPc !== null &&
+    state.currentTonicPc !== null &&
+    phrase.lastSustainedPc !== state.currentTonicPc
+  ) {
+    consecutiveAgreements = 0; // sequência quebrada
+  }
+
+  // 4) Atualiza histograma de duração
   const newDurHist = updateNoteDurHist(state.noteDurHist, phrase);
 
-  // 4) Encontra tônica candidata (top do tally) + segundo colocado
+  // 5) Encontra tônica candidata + segundo colocado
   let topPc = 0;
   let topWeight = -Infinity;
   let secondWeight = 0;
@@ -265,40 +301,57 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
     }
   }
 
-  // ── HISTERESE FORTE: se já tínhamos tônica confirmada/definitiva, não troca
-  //    a menos que nova candidata vença por MARGEM ALTA (HYSTERESIS_FACTOR).
+  // 6) HISTERESE GRADUAL POR STAGE (v3)
+  // Antes atuava só em confirmed/definitive. Agora protege desde "probable",
+  // que é o caso crítico de hinos em tonalidades com muitos graus diatônicos.
+  const hysteresisFactor = HYSTERESIS_BY_STAGE[state.stage] ?? 1.0;
   if (
     state.currentTonicPc !== null &&
-    (state.stage === 'confirmed' || state.stage === 'definitive') &&
+    state.stage !== 'listening' &&
     topPc !== state.currentTonicPc
   ) {
     const prevWeight = newTally[state.currentTonicPc];
-    if (topWeight < prevWeight * HYSTERESIS_FACTOR) {
-      // Mantém tônica anterior; segundo colocado é a "nova candidata"
+    if (topWeight < prevWeight * hysteresisFactor) {
       secondWeight = topWeight;
       topWeight = prevWeight;
       topPc = state.currentTonicPc;
     }
   }
 
-  // 5) Confiança — métrica musicalmente interpretável
-  //    Combina:
-  //    (a) margem: quanto a tônica vence a segunda candidata (0..1)
-  //    (b) stage floor: cada stage tem um mínimo perceptual
-  //    (c) acumulação: mais frases = maior confiança base
+  // Se a tônica NÃO mudou via histerese (ou é a mesma), mantém o contador;
+  // se trocou de fato, reseta para 1 se a frase atual resolve na nova tônica
+  if (state.currentTonicPc !== null && topPc !== state.currentTonicPc) {
+    // Trocou mesmo — reseta
+    consecutiveAgreements = phrase.lastSustainedPc === topPc ? 1 : 0;
+  } else if (state.currentTonicPc === null && phrase.lastSustainedPc === topPc) {
+    // Primeira tônica + frase resolveu nela
+    consecutiveAgreements = 1;
+  }
+
+  // 7) CONFIANÇA HONESTA (v3) — baseada em evidências reais, sem piso cosmético
+  //    Componentes (todos em 0..1):
+  //    • marginRatio:  quanto a tônica vence o 2º lugar
+  //    • phraseBonus:  temos volume suficiente de frases? (≥ 3 = 1.0)
+  //    • consecBonus:  frases consecutivas concordantes (≥ 3 = 1.0)
+  //    • weightNorm:   peso absoluto acumulado da tônica (saturado em 15)
   const marginRatio = topWeight > 0
     ? Math.min(1, (topWeight - secondWeight) / (topWeight + 0.5))
     : 0;
-  const phraseBonus = Math.min(1, (state.phrases.length + 1) / 3); // 1 frase → 0.33, 3+ → 1.0
-  const rawConf = 0.45 * marginRatio + 0.55 * phraseBonus * Math.min(1, topWeight / 12);
+  const phraseBonus = Math.min(1, (state.phrases.length + 1) / 3);
+  const consecBonus = Math.min(1, consecutiveAgreements / 3);
+  const weightNorm = Math.min(1, topWeight / 15);
 
-  // 7) Frases pra avaliar stage
+  const tonicConfidence =
+    0.25 * phraseBonus +
+    0.30 * marginRatio +
+    0.30 * consecBonus +
+    0.15 * weightNorm;
+
+  // 8) Qualidade (maj/min) via tríade nos repousos
   const newPhrases = [...state.phrases, phrase];
-
-  // 6) Qualidade — agora usando análise posicional das frases
   const qr = determineQuality(newPhrases, newDurHist, topPc);
 
-  // Últimas 2 frases concordam? (top-vote pc de cada frase é igual ao topPc atual?)
+  // 9) Concordância das últimas frases (pra critérios de stage)
   const lastPhrasesAgree = (() => {
     if (newPhrases.length < 2) return false;
     const lp = newPhrases[newPhrases.length - 1];
@@ -306,7 +359,6 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
     return lp.lastSustainedPc === topPc && pp.lastSustainedPc === topPc;
   })();
 
-  // Últimas 3 concordam?
   const lastThreePhrasesAgree = (() => {
     if (newPhrases.length < 3) return false;
     return (
@@ -318,19 +370,11 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
 
   const stage = determineStage({
     phraseCount: newPhrases.length,
-    tonicConfidence: rawConf,
+    tonicConfidence,
     qualityMargin: qr.margin,
     lastPhrasesAgree,
     lastThreePhrasesAgree,
   });
-
-  // Confiança perceptual final: piso por stage + margem musical
-  // Garante que "definitivo" mostre ao menos 80%, "confirmado" 60%, etc.
-  let tonicConfidence = rawConf;
-  if (stage === 'definitive') tonicConfidence = Math.max(0.82, Math.min(1, 0.82 + marginRatio * 0.18));
-  else if (stage === 'confirmed') tonicConfidence = Math.max(0.62, Math.min(0.85, 0.62 + marginRatio * 0.25));
-  else if (stage === 'probable') tonicConfidence = Math.max(0.35, Math.min(0.65, 0.35 + marginRatio * 0.30));
-  else tonicConfidence = 0;
 
   return {
     phrases: newPhrases,
@@ -341,6 +385,7 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
     quality: stage === 'listening' ? null : qr.quality,
     qualityMargin: qr.margin,
     stage,
+    consecutiveAgreements,
   };
 }
 

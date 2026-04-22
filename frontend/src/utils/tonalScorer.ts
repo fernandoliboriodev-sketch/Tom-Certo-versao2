@@ -286,3 +286,23 @@ export function agreementMultiplier(
   if (rootsMatch) return 0.60;
   return 0.30;
 }
+
+// ── Proteção "top-3" (v3) ─────────────────────────────────────────
+// Verifica se a tônica do phrase-voting está entre os top-3 candidatos
+// do scorer. Se SIM, significa que a tônica ainda é "razoavelmente certa"
+// — mesmo que não seja o #1, não deve ser descartada. Isso evita que um
+// grau diatônico forte momentâneo (ex: V ou ii) puxe a confiança pra baixo.
+export function isInTop3(
+  phraseWinnerRoot: number,
+  phraseWinnerQuality: 'major' | 'minor',
+  rankedCandidates: TonalCandidate[]
+): { inTop3: boolean; rank: number } {
+  const top3 = rankedCandidates.slice(0, 3);
+  for (let i = 0; i < top3.length; i++) {
+    const c = top3[i];
+    if (c.root === phraseWinnerRoot && c.quality === phraseWinnerQuality) {
+      return { inTop3: true, rank: i + 1 };
+    }
+  }
+  return { inTop3: false, rank: -1 };
+}
