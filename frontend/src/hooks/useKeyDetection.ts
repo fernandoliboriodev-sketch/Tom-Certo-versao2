@@ -173,8 +173,10 @@ export function useKeyDetection(): UseKeyDetectionReturn {
         const next = ingestPhrase(prev, phrase);
 
         // ═══ SCORER CONTEXTUAL (complementar) ═══
-        // Roda a fórmula: 0.35×aderência + 0.30×forçaTônica + 0.20×resolução
-        //                 + 0.15×estabilidade - 0.25×penalidade
+        // Fórmula v2 (distingue tonalidades RELATIVAS):
+        //   0.15×aderência + 0.30×perfilKrumhansl + 0.30×resolução
+        //   + 0.15×forçaTônica + 0.10×estabilidade - 0.20×penalidade
+        // Com tiebreaker especial para pares relativos maj/min.
         try {
           const samples = tempBufferRef.current.getSamples();
           if (samples.length >= 3 && next.phrases.length >= 1) {

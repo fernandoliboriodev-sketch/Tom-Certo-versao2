@@ -29,10 +29,10 @@ export const MIN_PHRASE_DUR_MS = 700;       // frase precisa ter ≥ isso (antes
 export const MIN_NOTES_PER_PHRASE = 3;      // ≥ 3 notas distintas (antes 2)
 export const MIN_CADENCE_DUR_MS = 280;      // cadência precisa ≥ isso (antes 180)
 
-// ─── Pesos de votação ─────────────────────────────────────────────────
-export const VOTE_CADENCE = 5.0;
+// ─── Pesos de votação (v2: cadência é a âncora tonal mais forte) ──────
+export const VOTE_CADENCE = 7.0;      // antes 5.0 — frase RESOLVE na tônica
 export const VOTE_FIRST_STABLE = 2.0;
-export const VOTE_LONGEST = 1.5;
+export const VOTE_LONGEST = 1.0;      // antes 1.5 — mais longa nem sempre é tônica
 
 // ─── Estabilidade (MUITO MAIS RIGOROSA) ────────────────────────────────
 export const TALLY_DECAY = 0.90;               // preserva mais histórico (antes 0.85)
@@ -148,12 +148,18 @@ function updateNoteDurHist(hist: number[], phrase: Phrase): number[] {
   return out;
 }
 
-// ── Determina qualidade (maj/min) a partir das frases e histograma ────
-// CRITÉRIO MELHORADO: considera POSIÇÃO da 3ª (cadência/repouso pesa mais).
-//   - M3/m3 na cadência ou nota mais longa: peso 3×
-//   - M3/m3 com duração ≥ 250ms (nota de repouso): peso 2×
-//   - M3/m3 como nota de passagem curta: peso 1×
-// Também usa leading tone (7ª maior) como desempate secundário.
+// ── Determina qualidade (maj/min) usando ANÁLISE POR TRÍADE NOS REPOUSOS ─
+// v2: Em vez de só comparar M3 vs m3 (susceptível a notas de passagem),
+// analisamos em qual tríade as notas de REPOUSO das frases caem:
+//   - Tríade maior: {root, root+4, root+7}
+//   - Tríade menor: {root, root+3, root+7}
+// A quinta (root+7) é neutra; o que distingue é M3 vs m3.
+//
+// Peso por posição musical:
+//   • cadência (lastSustainedPc)        → 4× (repouso da frase)
+//   • nota mais longa da frase          → 2.5×
+//   • nota ≥ 250ms (repouso estendido)  → 2×
+//   • outras notas                      → 1× (passagem)
 function determineQuality(
   phrases: Phrase[],
   noteDurHist: number[],
@@ -168,25 +174,24 @@ function determineQuality(
   for (const phrase of phrases) {
     for (const note of phrase.notes) {
       if (note.pitchClass !== M3pc && note.pitchClass !== m3pc) continue;
-      // Peso por posição musical
       let weight = 1; // passagem curta
       if (note.durMs >= 250) weight = 2; // repouso
-      if (note.pitchClass === phrase.lastSustainedPc) weight = Math.max(weight, 3); // cadência
-      if (note.pitchClass === phrase.longestPc) weight = Math.max(weight, 2.5); // nota mais longa
+      if (note.pitchClass === phrase.longestPc) weight = Math.max(weight, 2.5);
+      if (note.pitchClass === phrase.lastSustainedPc) weight = Math.max(weight, 4);
 
       if (note.pitchClass === M3pc) M3Weight += weight;
       else m3Weight += weight;
     }
   }
 
-  // Se não há dados de 3ª, usa leading tone como fallback
+  // Fallback: se não há 3ª na melodia, usa leading tone vs 7ª menor
   const total3rd = M3Weight + m3Weight;
   if (total3rd < 1) {
-    const leadingTone = noteDurHist[(tonicPc + 11) % 12];
-    const minorSeventh = noteDurHist[(tonicPc + 10) % 12];
+    const leadingTone = noteDurHist[(tonicPc + 11) % 12]; // 7M
+    const minorSeventh = noteDurHist[(tonicPc + 10) % 12]; // 7m
     if (leadingTone > minorSeventh * 1.2) return { quality: 'major', margin: 1.5 };
     if (minorSeventh > leadingTone * 1.2) return { quality: 'minor', margin: 1.5 };
-    return { quality: 'major', margin: 1.0 }; // prior pra maior
+    return { quality: 'major', margin: 1.0 };
   }
 
   const majRatio = M3Weight / (m3Weight + 0.1);
@@ -194,7 +199,6 @@ function determineQuality(
 
   if (majRatio >= 1.25) return { quality: 'major', margin: majRatio };
   if (minRatio >= 1.25) return { quality: 'minor', margin: minRatio };
-  // Ambíguo → prior suave pra major
   return { quality: 'major', margin: 1.0 };
 }
 
