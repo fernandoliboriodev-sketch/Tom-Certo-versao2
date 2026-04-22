@@ -21,6 +21,17 @@
 
 export const NOTE_NAMES_BR = ['Dó', 'Dó#', 'Ré', 'Ré#', 'Mi', 'Fá', 'Fá#', 'Sol', 'Sol#', 'Lá', 'Lá#', 'Si'];
 
+// ─── Âncora global de tônica (v4) ─────────────────────────────────────
+import {
+  TonicAnchor,
+  createAnchor,
+  ingestPhraseAnchor,
+  alignmentScore,
+  alignmentBoost,
+  isDiatonicDegreeOf,
+  requiredGravityMargin,
+} from './tonicAnchor';
+
 // ─── Constantes de segmentação (MAIS CONSERVADOR) ─────────────────────
 export const SILENCE_END_PHRASE_MS = 300;   // silêncio pra fechar frase
 export const LEGATO_SUSTAINED_MS = 1500;    // fallback: nota sustentada = frase
@@ -85,6 +96,7 @@ export interface KeyDetectionState {
   qualityMargin: number;        // razão M3/m3 ou m3/M3
   stage: DetectionStage;
   consecutiveAgreements: number; // v3: nº de frases seguidas que resolveram na tônica atual
+  anchor: TonicAnchor;           // v4: gravidade tonal global
 }
 
 // ── Inicialização ────────────────────────────────────────────────────
@@ -99,6 +111,7 @@ export function createInitialState(): KeyDetectionState {
     qualityMargin: 0,
     stage: 'listening',
     consecutiveAgreements: 0,
+    anchor: createAnchor(),
   };
 }
 
@@ -250,24 +263,30 @@ function determineStage(s: {
   return 'listening';
 }
 
-// ── Integra uma nova frase ao estado (v3) ───────────────────────────
-// Mudanças v3:
-//   • Histerese GRADUAL por stage (protege desde "probable", não só confirmed)
+// ── Integra uma nova frase ao estado (v4 — com Âncora Global) ──────
+// Mudanças v4:
+//   • Atualiza gravidade tonal global (decay lento 0.98) — memória longa
+//   • Aplica ALIGNMENT BOOST ao tally: effectiveWeight = tally × (0.4 + 0.6×align)
+//     Tônicas sem gravidade perdem até 60% do peso; alinhadas preservam integral.
+//   • Guard anti-grau-diatônico: se o novo candidato topPc é V/IV/vi/ii/iii
+//     da tônica ATUAL, exige gravity ≥ 1.3× da atual pra trocar. Impede que
+//     V, IV, vi momentâneos roubem o trono.
+// Mudanças v3 (preservadas):
+//   • Histerese gradual por stage
 //   • Bônus cumulativo para tônica quando frases consecutivas concordam
-//   • Confiança baseada em EVIDÊNCIAS REAIS (não piso cosmético por stage):
-//     combina margem, frases analisadas, concordância consecutiva e peso
-//     absoluto acumulado.
+//   • Confiança baseada em evidências reais
 export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetectionState {
-  // 1) Decay do tally anterior
+  // 1) Atualiza ÂNCORA GLOBAL (v4) — memória longa com decay lento
+  const newAnchor = ingestPhraseAnchor(state.anchor, phrase);
+
+  // 2) Decay do tally anterior (decay rápido, local)
   const decayed = state.tonicTally.map(v => v * TALLY_DECAY);
 
-  // 2) Adiciona votos da nova frase
+  // 3) Adiciona votos da nova frase
   const votes = votesFromPhrase(phrase);
   const newTally = decayed.map((v, i) => v + votes[i]);
 
-  // 3) BÔNUS DE CONCORDÂNCIA CONSECUTIVA (v3)
-  // Se a frase atual resolve na MESMA tônica que as últimas N frases consecutivas,
-  // amplifica o peso dessa tônica — reflete convicção musical cumulativa.
+  // 4) BÔNUS DE CONCORDÂNCIA CONSECUTIVA (v3)
   let consecutiveAgreements = state.consecutiveAgreements;
   if (
     state.currentTonicPc !== null &&
@@ -281,36 +300,38 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
     state.currentTonicPc !== null &&
     phrase.lastSustainedPc !== state.currentTonicPc
   ) {
-    consecutiveAgreements = 0; // sequência quebrada
+    consecutiveAgreements = 0;
   }
 
-  // 4) Atualiza histograma de duração
+  // 5) Atualiza histograma de duração
   const newDurHist = updateNoteDurHist(state.noteDurHist, phrase);
 
-  // 5) Encontra tônica candidata + segundo colocado
+  // 6) ALIGNMENT BOOST (v4) — multiplica o tally pela compatibilidade com
+  //    a gravidade tonal global. Pitches sem gravity perdem até 60%.
+  const effectiveTally = newTally.map((w, pc) => w * alignmentBoost(pc, newAnchor));
+
+  // 7) Encontra tônica candidata + 2º colocado usando effectiveTally
   let topPc = 0;
   let topWeight = -Infinity;
   let secondWeight = 0;
   for (let pc = 0; pc < 12; pc++) {
-    if (newTally[pc] > topWeight) {
+    if (effectiveTally[pc] > topWeight) {
       secondWeight = topWeight > -Infinity ? topWeight : 0;
-      topWeight = newTally[pc];
+      topWeight = effectiveTally[pc];
       topPc = pc;
-    } else if (newTally[pc] > secondWeight) {
-      secondWeight = newTally[pc];
+    } else if (effectiveTally[pc] > secondWeight) {
+      secondWeight = effectiveTally[pc];
     }
   }
 
-  // 6) HISTERESE GRADUAL POR STAGE (v3)
-  // Antes atuava só em confirmed/definitive. Agora protege desde "probable",
-  // que é o caso crítico de hinos em tonalidades com muitos graus diatônicos.
+  // 8) HISTERESE GRADUAL POR STAGE (v3) — aplicada sobre effectiveTally
   const hysteresisFactor = HYSTERESIS_BY_STAGE[state.stage] ?? 1.0;
   if (
     state.currentTonicPc !== null &&
     state.stage !== 'listening' &&
     topPc !== state.currentTonicPc
   ) {
-    const prevWeight = newTally[state.currentTonicPc];
+    const prevWeight = effectiveTally[state.currentTonicPc];
     if (topWeight < prevWeight * hysteresisFactor) {
       secondWeight = topWeight;
       topWeight = prevWeight;
@@ -318,40 +339,60 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
     }
   }
 
-  // Se a tônica NÃO mudou via histerese (ou é a mesma), mantém o contador;
-  // se trocou de fato, reseta para 1 se a frase atual resolve na nova tônica
+  // 9) GUARD ANTI-GRAU-DIATÔNICO (v4) — se o novo topPc é grau diatônico
+  //    da tônica atual, exige que a gravidade dele seja ≥ 1.3× da atual.
+  //    Sem isso, mantém a tônica atual (V, IV, vi momentâneos não derrubam).
+  if (
+    state.currentTonicPc !== null &&
+    state.stage !== 'listening' &&
+    topPc !== state.currentTonicPc &&
+    isDiatonicDegreeOf(topPc, state.currentTonicPc, state.quality)
+  ) {
+    const margin = requiredGravityMargin(topPc, state.currentTonicPc, state.quality);
+    const gravCandidate = newAnchor.gravity[topPc];
+    const gravCurrent = newAnchor.gravity[state.currentTonicPc];
+    if (gravCandidate < gravCurrent * margin) {
+      // Não trocar — manter tônica atual
+      topPc = state.currentTonicPc;
+      topWeight = effectiveTally[state.currentTonicPc];
+      // Recalcula second como o 2º colocado descartando atual
+      secondWeight = 0;
+      for (let pc = 0; pc < 12; pc++) {
+        if (pc === topPc) continue;
+        if (effectiveTally[pc] > secondWeight) secondWeight = effectiveTally[pc];
+      }
+    }
+  }
+
+  // 10) Atualiza contador de concordância consecutiva baseado no topPc FINAL
   if (state.currentTonicPc !== null && topPc !== state.currentTonicPc) {
-    // Trocou mesmo — reseta
     consecutiveAgreements = phrase.lastSustainedPc === topPc ? 1 : 0;
   } else if (state.currentTonicPc === null && phrase.lastSustainedPc === topPc) {
-    // Primeira tônica + frase resolveu nela
     consecutiveAgreements = 1;
   }
 
-  // 7) CONFIANÇA HONESTA (v3) — baseada em evidências reais, sem piso cosmético
-  //    Componentes (todos em 0..1):
-  //    • marginRatio:  quanto a tônica vence o 2º lugar
-  //    • phraseBonus:  temos volume suficiente de frases? (≥ 3 = 1.0)
-  //    • consecBonus:  frases consecutivas concordantes (≥ 3 = 1.0)
-  //    • weightNorm:   peso absoluto acumulado da tônica (saturado em 15)
+  // 11) CONFIANÇA HONESTA (v3) — baseada em evidências reais
   const marginRatio = topWeight > 0
     ? Math.min(1, (topWeight - secondWeight) / (topWeight + 0.5))
     : 0;
   const phraseBonus = Math.min(1, (state.phrases.length + 1) / 3);
   const consecBonus = Math.min(1, consecutiveAgreements / 3);
   const weightNorm = Math.min(1, topWeight / 15);
+  // v4: bônus pequeno de alignment (reflete convicção global)
+  const alignBonus = alignmentScore(topPc, newAnchor);
 
   const tonicConfidence =
-    0.25 * phraseBonus +
-    0.30 * marginRatio +
-    0.30 * consecBonus +
-    0.15 * weightNorm;
+    0.22 * phraseBonus +
+    0.28 * marginRatio +
+    0.28 * consecBonus +
+    0.12 * weightNorm +
+    0.10 * alignBonus;
 
-  // 8) Qualidade (maj/min) via tríade nos repousos
+  // 12) Qualidade (maj/min) via tríade nos repousos
   const newPhrases = [...state.phrases, phrase];
   const qr = determineQuality(newPhrases, newDurHist, topPc);
 
-  // 9) Concordância das últimas frases (pra critérios de stage)
+  // 13) Concordância das últimas frases
   const lastPhrasesAgree = (() => {
     if (newPhrases.length < 2) return false;
     const lp = newPhrases[newPhrases.length - 1];
@@ -386,6 +427,7 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
     qualityMargin: qr.margin,
     stage,
     consecutiveAgreements,
+    anchor: newAnchor,
   };
 }
 

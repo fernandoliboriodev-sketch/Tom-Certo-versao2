@@ -382,6 +382,97 @@ const testCases: TestCase[] = [
     expectedTonicPc: 6,
     expectedQuality: 'major',
   },
+  // ═══ TESTES DE DRIFT (v4) ═══
+  // Começa em tom X, depois injeta frases enfatizando graus diatônicos.
+  // O sistema NÃO pode migrar para o grau.
+  {
+    name: 'DRIFT Sol Maior → NÃO pode virar Lá menor nem Dó Maior',
+    melodies: [
+      ...majorPhrases(7),                          // 5 frases em Sol Maior (firma tônica)
+      // Depois, frases que tentam "puxar" pra Lá menor (vi) e Dó Maior (IV)
+      // Essas frases ainda estão no campo diatônico de Sol Maior, mas
+      // têm cadências em A (vi) e C (IV). Sistema deve MANTER Sol Maior.
+      [
+        { pc: 0, durMs: 280 },  // C (IV)
+        { pc: 4, durMs: 260 },  // E
+        { pc: 0, durMs: 300 },  // C
+        { pc: 9, durMs: 260 },  // A
+        { pc: 0, durMs: 650 },  // C (cadência em C)
+      ],
+      [
+        { pc: 9, durMs: 280 },  // A
+        { pc: 0, durMs: 260 },  // C
+        { pc: 11, durMs: 260 }, // B
+        { pc: 9, durMs: 650 },  // A (cadência em A)
+      ],
+      [
+        { pc: 0, durMs: 280 },
+        { pc: 9, durMs: 280 },
+        { pc: 7, durMs: 260 },
+        { pc: 0, durMs: 650 },  // cadência em C
+      ],
+    ],
+    expectedKey: 'Sol Maior',
+    expectedTonicPc: 7,
+    expectedQuality: 'major',
+  },
+  {
+    name: 'DRIFT Fá# Maior → NÃO pode virar Dó# Maior nem Sol# menor',
+    melodies: [
+      ...majorPhrases(6),                          // 5 frases em Fá# Maior (firma tônica)
+      // Frases com cadências em C# (V) e G# (ii)
+      [
+        { pc: 1, durMs: 300 },  // C#
+        { pc: 3, durMs: 260 },
+        { pc: 1, durMs: 300 },  // C#
+        { pc: 11, durMs: 260 },
+        { pc: 1, durMs: 650 },  // cadência em C#
+      ],
+      [
+        { pc: 8, durMs: 280 },  // G#
+        { pc: 10, durMs: 260 },
+        { pc: 11, durMs: 260 },
+        { pc: 8, durMs: 650 },  // cadência em G#
+      ],
+      [
+        { pc: 1, durMs: 260 },
+        { pc: 8, durMs: 280 },
+        { pc: 10, durMs: 260 },
+        { pc: 1, durMs: 650 },  // cadência em C#
+      ],
+    ],
+    expectedKey: 'Fá# Maior',
+    expectedTonicPc: 6,
+    expectedQuality: 'major',
+  },
+  {
+    name: 'DRIFT Ré Maior → NÃO pode virar Fá# menor nem Lá Maior',
+    melodies: [
+      ...majorPhrases(2),                          // 5 frases em Ré Maior (firma tônica)
+      // Frases com cadências em F# (iii) e A (V)
+      [
+        { pc: 6, durMs: 300 },  // F#
+        { pc: 9, durMs: 260 },
+        { pc: 1, durMs: 260 },
+        { pc: 6, durMs: 650 },  // cadência em F#
+      ],
+      [
+        { pc: 9, durMs: 280 },  // A
+        { pc: 1, durMs: 260 },
+        { pc: 4, durMs: 260 },
+        { pc: 9, durMs: 650 },  // cadência em A
+      ],
+      [
+        { pc: 6, durMs: 260 },
+        { pc: 9, durMs: 280 },
+        { pc: 6, durMs: 260 },
+        { pc: 9, durMs: 650 },  // cadência em A
+      ],
+    ],
+    expectedKey: 'Ré Maior',
+    expectedTonicPc: 2,
+    expectedQuality: 'major',
+  },
 ];
 
 // ── Runner ────────────────────────────────────────────────────────────
