@@ -26,21 +26,21 @@ import { usePitchEngine } from '../audio/usePitchEngine';
 import type { PitchEvent, PitchErrorReason } from '../audio/types';
 import { frequencyToMidi, midiToPitchClass } from '../utils/noteUtils';
 
-// ─── Filtros de frame (afrouxados pra voz real) ───────────────
-const MIN_RMS = 0.008;             // ↓ era 0.010
-const MIN_CLARITY = 0.50;          // ↓ era 0.55
-const MEDIAN_WINDOW = 3;           // ↓ era 5 (menos smoothing, mais responsivo)
+// ─── Filtros de frame (CONSERVADORES) ─────────────────────────
+const MIN_RMS = 0.010;
+const MIN_CLARITY = 0.55;
+const MEDIAN_WINDOW = 5;           // ↑ era 3 (mais smoothing)
 
-// ─── Commit de nota ──────────────────────────────────────────
-const MIN_COMMIT_FRAMES = 2;       // ↓ era 4 (~46ms — ainda filtra ruído)
-const MIN_NOTE_DUR_MS_LOCAL = 80;  // ↓ era 120 — notas curtas contam
+// ─── Commit de nota (MAIS RIGOROSO) ─────────────────────────
+const MIN_COMMIT_FRAMES = 4;       // ↑ era 2 (~92ms, ignora notas rápidas)
+const MIN_NOTE_DUR_MS_LOCAL = 130; // ↑ era 80
 
-// ─── Fechamento de frase (múltiplos gatilhos) ────────────────
-const VOICED_GAP_MS = 250;         // ausência de voz ≥ 250ms = fim de frase
-const LEGATO_SUSTAIN_MS = 1200;    // nota mantida ≥ 1.2s (após 2+ notas) = fim
-const LONG_PHRASE_NOTES = 5;       // ≥ 5 notas distintas
-const LONG_PHRASE_DUR_MS = 3000;   // e dur ≥ 3s = fim
-const SAFETY_TIMEOUT_MS = 8000;    // safety net: 8s sem fechar → força fim
+// ─── Fechamento de frase ───────────────────────────────────
+const VOICED_GAP_MS = 300;         // ↑ era 250 (mais tolerante)
+const LEGATO_SUSTAIN_MS = 1500;    // ↑ era 1200
+const LONG_PHRASE_NOTES = 6;       // ↑ era 5
+const LONG_PHRASE_DUR_MS = 3500;   // ↑ era 3000
+const SAFETY_TIMEOUT_MS = 10000;   // ↑ era 8000
 
 // ─── Tipos de compatibilidade ────────────────────────────────
 export type DetectionState =

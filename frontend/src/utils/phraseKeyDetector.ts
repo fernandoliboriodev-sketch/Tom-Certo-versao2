@@ -21,25 +21,28 @@
 
 export const NOTE_NAMES_BR = ['Dó', 'Dó#', 'Ré', 'Ré#', 'Mi', 'Fá', 'Fá#', 'Sol', 'Sol#', 'Lá', 'Lá#', 'Si'];
 
-// ─── Constantes de segmentação ────────────────────────────────────────
-export const SILENCE_END_PHRASE_MS = 250;   // silêncio pra fechar frase
-export const LEGATO_SUSTAINED_MS = 1200;    // fallback: nota sustentada = frase
-export const MIN_NOTE_DUR_MS = 80;          // nota precisa durar ≥ isso pra contar
-export const MIN_PHRASE_DUR_MS = 400;       // frase precisa ter ≥ isso
-export const MIN_NOTES_PER_PHRASE = 2;
-export const MIN_CADENCE_DUR_MS = 180;      // última nota precisa ≥ isso pra ser cadência
+// ─── Constantes de segmentação (MAIS CONSERVADOR) ─────────────────────
+export const SILENCE_END_PHRASE_MS = 300;   // silêncio pra fechar frase
+export const LEGATO_SUSTAINED_MS = 1500;    // fallback: nota sustentada = frase
+export const MIN_NOTE_DUR_MS = 130;         // nota precisa durar ≥ isso (antes 80)
+export const MIN_PHRASE_DUR_MS = 700;       // frase precisa ter ≥ isso (antes 400)
+export const MIN_NOTES_PER_PHRASE = 3;      // ≥ 3 notas distintas (antes 2)
+export const MIN_CADENCE_DUR_MS = 280;      // cadência precisa ≥ isso (antes 180)
 
 // ─── Pesos de votação ─────────────────────────────────────────────────
 export const VOTE_CADENCE = 5.0;
 export const VOTE_FIRST_STABLE = 2.0;
 export const VOTE_LONGEST = 1.5;
 
-// ─── Estabilidade / decay ─────────────────────────────────────────────
-export const TALLY_DECAY = 0.85;            // tally antigo mantém 85% a cada nova frase
+// ─── Estabilidade (MUITO MAIS RIGOROSA) ────────────────────────────────
+export const TALLY_DECAY = 0.90;               // preserva mais histórico (antes 0.85)
 export const STAGE_PROBABLE_MIN_CONF = 0.35;
-export const STAGE_CONFIRMED_MIN_CONF = 0.65;
-export const STAGE_DEFINITIVE_MIN_CONF = 0.82;
-export const STAGE_DEFINITIVE_MIN_QUALITY_MARGIN = 1.15;
+export const STAGE_CONFIRMED_MIN_CONF = 0.78;  // antes 0.65
+export const STAGE_DEFINITIVE_MIN_CONF = 0.92; // antes 0.82
+export const STAGE_DEFINITIVE_MIN_QUALITY_MARGIN = 1.35; // antes 1.15
+export const STAGE_CONFIRMED_MIN_PHRASES = 3;  // antes 2
+export const STAGE_DEFINITIVE_MIN_PHRASES = 4; // antes 3
+export const HYSTERESIS_FACTOR = 2.0;          // antes 1.5
 
 export type DetectionStage = 'listening' | 'probable' | 'confirmed' | 'definitive';
 
@@ -195,23 +198,27 @@ function determineQuality(
   return { quality: 'major', margin: 1.0 };
 }
 
-// ── Determina stage com base no estado cumulativo ───────────────────
+// ── Determina stage com base no estado cumulativo (MAIS CONSERVADOR) ─
 function determineStage(s: {
   phraseCount: number;
   tonicConfidence: number;
   qualityMargin: number;
-  lastPhrasesAgree: boolean; // últimas 2 frases concordam na tônica?
-  lastThreePhrasesAgree: boolean;
+  lastPhrasesAgree: boolean;       // últimas 2 frases concordam?
+  lastThreePhrasesAgree: boolean;  // últimas 3 frases concordam?
 }): DetectionStage {
   if (s.phraseCount === 0) return 'listening';
 
-  // Provável: ≥1 frase e confiança razoável
+  // Provável: ≥ 1 frase + confiança mínima
   if (s.phraseCount >= 1 && s.tonicConfidence >= STAGE_PROBABLE_MIN_CONF) {
-    // Confirmada: ≥2 frases, confiança maior, e últimas 2 concordam
-    if (s.phraseCount >= 2 && s.tonicConfidence >= STAGE_CONFIRMED_MIN_CONF && s.lastPhrasesAgree) {
-      // Definitivo: ≥3 frases, confiança alta, 3 últimas concordam, qualidade margem OK
+    // Confirmado: ≥ 3 frases + concordância nas últimas 2 + confiança alta
+    if (
+      s.phraseCount >= STAGE_CONFIRMED_MIN_PHRASES &&
+      s.tonicConfidence >= STAGE_CONFIRMED_MIN_CONF &&
+      s.lastPhrasesAgree
+    ) {
+      // Definitivo: ≥ 4 frases, 3 concordam, confiança muito alta, qualidade MARGEM FORTE
       if (
-        s.phraseCount >= 3 &&
+        s.phraseCount >= STAGE_DEFINITIVE_MIN_PHRASES &&
         s.tonicConfidence >= STAGE_DEFINITIVE_MIN_CONF &&
         s.lastThreePhrasesAgree &&
         s.qualityMargin >= STAGE_DEFINITIVE_MIN_QUALITY_MARGIN
@@ -254,16 +261,15 @@ export function ingestPhrase(state: KeyDetectionState, phrase: Phrase): KeyDetec
     }
   }
 
-  // ── HISTERESE: se já tínhamos tônica confirmada/definitiva, não troca
-  //    a menos que nova candidata vença por MARGEM GRANDE (1.5×).
-  //    Isso evita que uma frase "errada" troque o tom brutalmente.
+  // ── HISTERESE FORTE: se já tínhamos tônica confirmada/definitiva, não troca
+  //    a menos que nova candidata vença por MARGEM ALTA (HYSTERESIS_FACTOR).
   if (
     state.currentTonicPc !== null &&
     (state.stage === 'confirmed' || state.stage === 'definitive') &&
     topPc !== state.currentTonicPc
   ) {
     const prevWeight = newTally[state.currentTonicPc];
-    if (topWeight < prevWeight * 1.5) {
+    if (topWeight < prevWeight * HYSTERESIS_FACTOR) {
       // Mantém tônica anterior; segundo colocado é a "nova candidata"
       secondWeight = topWeight;
       topWeight = prevWeight;
