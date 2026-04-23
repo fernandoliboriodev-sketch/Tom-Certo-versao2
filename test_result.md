@@ -188,6 +188,71 @@ agent_communication:
     - agent: "main"
       message: "Detecção tonal completamente refatorada para 2-tier (provisional 1.8s + confirmed 5.5s). Confiança % ao vivo exibida com barra. Campo harmônico completo (7 acordes). Histerese forte contra mudanças falsas. 8/8 testes passando."
 
+backend:
+  - task: "Endpoints de autenticação, admin e ML analyze-key"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            Backend test suite executado em /app/backend_test.py contra
+            https://tom-certo.preview.emergentagent.com — 19/19 PASSARAM.
+
+            ── HEALTH & ADMIN UI ─────────────────────────────────────
+            ✅ GET /api/health → 200, {"status":"ok","time":...}, 0.37s
+            ✅ GET /api/admin-ui → 200 HTML (32898 bytes, contém "Tom Certo" e "PAINEL ADMINISTRATIVO")
+
+            ── ADMIN LOGIN ──────────────────────────────────────────
+            ✅ POST /api/admin/login (admin/admin123) → 200 + access_token JWT
+            ✅ POST /api/admin/login (senha errada) → 401 {"detail":"Usuário ou senha incorretos"}
+            ✅ POST /api/admin/login (usuário errado) → 401 {"detail":"Usuário ou senha incorretos"}
+
+            ── ADMIN TOKEN CRUD ─────────────────────────────────────
+            ✅ GET /api/admin/tokens → 200, array (12 tokens)
+            ✅ POST /api/admin/tokens (create customer_name="test-cleanup") → 200, retorna id/token
+            ✅ PATCH /api/admin/tokens/{id} → 200, atualiza customer_name e notes
+            ✅ DELETE /api/admin/tokens/{id}/devices → 200 {"ok":true,"message":"Dispositivos removidos com sucesso"}
+            ✅ DELETE /api/admin/tokens/{id} → 200 {"ok":true} (cleanup confirmado)
+
+            ── AUTH VALIDATE ────────────────────────────────────────
+            ✅ POST /api/auth/validate (TEST-DEV2026, backend-test-001) → 200 valid=true, session JWT, customer="Teste", expires=2027-04-20, 0.15s
+            ✅ POST /api/auth/validate (TOKEN-NAO-EXISTE) → 200 {"valid":false,"reason":"not_found"}
+            ✅ POST /api/auth/validate (token vazio) → 400 {"detail":"token e device_id são obrigatórios"}
+            ✅ POST /api/auth/validate (body vazio) → 422 (Pydantic validation error padrão)
+
+            ── AUTH REVALIDATE ──────────────────────────────────────
+            ✅ POST /api/auth/revalidate (session válida) → 200 valid=true, 0.11s
+            ✅ POST /api/auth/revalidate (session inválida) → 200 {"valid":false,"reason":"session_invalid"}
+
+            ── ML ANALYZE-KEY ───────────────────────────────────────
+            ✅ POST /api/analyze-key (body vazio) → 400 {"detail":"Áudio vazio ou muito pequeno"}
+            ✅ POST /api/analyze-key (WAV sintético 440Hz/5s/16kHz) → 200 {"success":true,"tonic_name":"Lá","method":"torchcrepe-tiny","f0_frames":501}, 1.59s
+
+            ── CORS ────────────────────────────────────────────────
+            ✅ Preflight OPTIONS → 204, Access-Control-Allow-Origin: *
+            ✅ GET com Origin header → Access-Control-Allow-Origin: *
+
+            ── TIMEOUTS ────────────────────────────────────────────
+            ✅ Todos endpoints auth < 0.5s (limite era 5s)
+            ✅ analyze-key completo em 1.59s (limite era 10s)
+
+            ── CONFIRMAÇÕES ────────────────────────────────────────
+            (a) Auth funciona com credenciais válidas ✅
+            (b) Erros de auth retornam {"valid":false,"reason":"..."} padronizado ✅
+                (reasons observados: not_found, session_invalid; schema inclui session_expired, revoked, expired, device_limit, device_mismatch)
+            (c) Admin panel acessível em /api/admin-ui ✅
+            (d) CORS habilitado com "*" em allow_origins ✅
+            (e) Timeouts OK (auth <500ms, analyze-key <2s) ✅
+
+            ── CLEANUP ─────────────────────────────────────────────
+            Token de teste criado (customer_name="test-cleanup") foi deletado
+            no próprio fluxo do teste (4e). TEST-DEV2026 NÃO foi modificado.
+
 
 user_problem_statement: "Upgrade completo da tela de login com UX premium, estética Spotify/Apple Music, botão com gradiente dourado, link WhatsApp para solicitar token, mensagem de confiança, micro-interações."
 

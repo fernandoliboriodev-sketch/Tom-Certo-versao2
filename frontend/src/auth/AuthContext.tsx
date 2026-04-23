@@ -18,11 +18,13 @@ export interface AuthContextValue {
   status: AuthStatus;
   session: SessionInfo | null;
   errorMessage: string | null;
+  lastReason: string | null;
   hasSavedToken: boolean;
-  activate: (code?: string) => Promise<{ ok: boolean; reason?: string }>;
+  activate: (code?: string) => Promise<{ ok: boolean; reason?: string | null }>;
   logout: () => Promise<void>;
   forgetDevice: () => Promise<void>;
   clearError: () => void;
+  retryRevalidate: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -44,21 +46,40 @@ function getBackendUrl(): string {
 function reasonToMessage(reason?: string | null): string {
   switch (reason) {
     case 'not_found':
-      return 'Token inválido. Verifique e tente novamente.';
+      return 'Token inválido. Verifique o código e tente novamente.';
     case 'revoked':
       return 'Token revogado. Entre em contato com o suporte.';
     case 'expired':
       return 'Token expirado. Solicite um novo acesso.';
     case 'device_limit':
-      return 'Este token já foi usado no limite máximo de dispositivos.';
+      return 'Limite de dispositivos atingido. Peça ao suporte para liberar seu dispositivo ou use outro token.';
     case 'session_expired':
     case 'session_invalid':
-      return 'Sessão expirada. Digite seu token novamente.';
+      return 'Sessão expirada. Ative novamente com seu token.';
     case 'device_mismatch':
-      return 'Este dispositivo não está autorizado.';
+      return 'Este dispositivo não está autorizado neste token. Use outro token ou peça liberação.';
+    case 'timeout':
+      return 'Tempo esgotado. Verifique sua internet e tente novamente.';
+    case 'network':
+      return 'Não foi possível conectar ao servidor. Verifique sua conexão.';
+    case 'no_backend':
+      return 'Servidor não configurado. Reinstale o app ou contate o suporte.';
     default:
-      return 'Falha ao validar token.';
+      return 'Falha ao validar token. Tente novamente em instantes.';
   }
+}
+
+// Classifica a razão pra UI decidir qual ação oferecer
+export function isPermanentFailure(reason?: string | null): boolean {
+  return reason === 'not_found' || reason === 'revoked' || reason === 'expired';
+}
+
+export function isDeviceBlockingFailure(reason?: string | null): boolean {
+  return reason === 'device_limit' || reason === 'device_mismatch';
+}
+
+export function isTransientFailure(reason?: string | null): boolean {
+  return reason === 'timeout' || reason === 'network' || reason === 'no_backend';
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -67,6 +88,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('unauthenticated');
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [lastReason, setLastReason] = useState<string | null>(null);
   const [hasSavedToken, setHasSavedToken] = useState<boolean>(false);
   const boot = useRef(false);
 
@@ -77,22 +99,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setHasSavedToken(!!savedToken);
 
       const raw = await storage.getItem(SESSION_KEY);
-      if (!raw) return;
+      if (!raw) {
+        console.log('[Auth] Sem sessão salva. Aguardando ativação manual.');
+        return;
+      }
 
-      // Tem sessão salva → revalida em background
+      // Tem sessão salva → revalida em background (com timeout de 10s)
       const parsed: SessionInfo = JSON.parse(raw);
       const deviceId = await getDeviceId();
       const base = getBackendUrl();
+      console.log('[Auth] Revalidando sessão em', base);
 
-      const res = await fetch(`${base}/api/auth/revalidate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session: parsed.session,
-          device_id: deviceId,
-        }),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      let res: Response;
+      try {
+        res = await fetch(`${base}/api/auth/revalidate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session: parsed.session,
+            device_id: deviceId,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
       const data = await res.json().catch(() => ({}));
+      console.log('[Auth] Revalidate response:', { status: res.status, valid: data?.valid, reason: data?.reason });
+
       if (res.ok && data?.valid) {
         setSession({
           ...parsed,
@@ -102,17 +140,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         setStatus('authenticated');
       } else {
-        await storage.removeItem(SESSION_KEY);
-        setSession(null);
-        // Permanece em 'unauthenticated' — ActivationScreen já está visível
-        if (data?.reason) {
-          setErrorMessage(reasonToMessage(data.reason));
+        // Sessão inválida — mas só apagar sessão se motivo for definitivo
+        // (not_found, revoked, expired). Para erros temporários, mantém sessão
+        // local e tentamos de novo na próxima abertura.
+        const r = data?.reason;
+        if (r === 'not_found' || r === 'revoked' || r === 'expired') {
+          await storage.removeItem(SESSION_KEY);
+          setSession(null);
+          setErrorMessage(reasonToMessage(r));
+          setLastReason(r);
+          // Mantém o TOKEN_KEY para o usuário poder tentar ativar novamente com ele
+          // (o validate() no activate() decidirá se apaga)
+        } else if (r === 'session_invalid' || r === 'session_expired') {
+          // Sessão JWT expirou mas o token pode ser válido
+          await storage.removeItem(SESSION_KEY);
+          setSession(null);
+          // Não mostra erro — user só vê o botão "Ativar acesso"
+        } else {
+          // Erro inesperado: mantém sessão (pode ser timing entre fetch e resposta)
+          setSession(null);
         }
       }
-    } catch (err) {
-      // Erro de rede na revalidação: mantém 'unauthenticated' silenciosamente
-      // (Se a internet voltar, próxima abertura do app resolve)
-      await storage.removeItem(SESSION_KEY);
+    } catch (err: any) {
+      // Erro de rede / timeout / JSON inválido: mantém 'unauthenticated' silenciosamente.
+      // Token e sessão continuam salvos — user pode tentar novamente com 1 toque.
+      const isAbort = err?.name === 'AbortError';
+      console.warn('[Auth] Revalidate falhou (rede/timeout):', isAbort ? 'timeout' : String(err?.message || err));
+      // IMPORTANTE: NÃO apagar session/token nesse caso! Se backend está offline temporariamente
+      // e apagamos, user perde acesso até digitar o token de novo.
     }
   };
 
@@ -134,8 +189,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, reason: 'empty' };
       }
       clean = saved;
+      console.log('[Auth] Ativando com token salvo');
     } else {
       clean = code.trim().toUpperCase();
+      console.log('[Auth] Ativando com token digitado');
     }
 
     const base = getBackendUrl();
@@ -146,6 +203,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const deviceId = await getDeviceId();
+      console.log('[Auth] Validando em', base, 'deviceId=', deviceId.slice(0, 8) + '...');
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
 
@@ -158,15 +216,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(timeoutId);
 
       const data = await res.json().catch(() => ({}));
+      console.log('[Auth] Validate response:', { status: res.status, valid: data?.valid, reason: data?.reason });
+
       if (!res.ok || !data?.valid) {
-        const msg = reasonToMessage(data?.reason);
+        const reason = data?.reason || 'unknown';
+        const msg = reasonToMessage(reason);
         setErrorMessage(msg);
-        // Se o token salvo é inválido, apaga-o para forçar nova digitação
-        if (data?.reason === 'not_found' || data?.reason === 'revoked' || data?.reason === 'expired') {
+        setLastReason(reason);
+        // Se o token salvo é DEFINITIVAMENTE inválido, apaga-o para forçar nova digitação
+        if (reason === 'not_found' || reason === 'revoked' || reason === 'expired') {
           await storage.removeItem(TOKEN_KEY);
+          await storage.removeItem(SESSION_KEY);
           setHasSavedToken(false);
         }
-        return { ok: false, reason: data?.reason };
+        // device_limit e device_mismatch: mantém o token salvo — user pode
+        // pedir ao admin pra liberar devices e tentar de novo
+        return { ok: false, reason };
       }
 
       const s: SessionInfo = {
@@ -182,15 +247,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setHasSavedToken(true);
       setSession(s);
       setStatus('authenticated');
+      console.log('[Auth] ✓ Autenticação OK');
       return { ok: true };
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError';
-      setErrorMessage(
-        isAbort
-          ? 'Tempo esgotado. Verifique sua internet e tente novamente.'
-          : 'Não foi possível conectar ao servidor. Tente novamente.'
-      );
-      return { ok: false, reason: isAbort ? 'timeout' : 'network' };
+      const msg = String(err?.message || err);
+      console.warn('[Auth] Validate falhou (rede/timeout):', isAbort ? 'timeout' : msg);
+      const reason = isAbort ? 'timeout' : 'network';
+      setErrorMessage(reasonToMessage(reason));
+      setLastReason(reason);
+      return { ok: false, reason };
     }
   };
 
@@ -200,6 +266,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await storage.removeItem(SESSION_KEY);
     setSession(null);
     setErrorMessage(null);
+    setLastReason(null);
     setStatus('unauthenticated');
     // NÃO apaga o token salvo — próxima ativação é rápida
   };
@@ -212,20 +279,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
     setHasSavedToken(false);
     setErrorMessage(null);
+    setLastReason(null);
     setStatus('unauthenticated');
   };
 
-  const clearError = () => setErrorMessage(null);
+  const clearError = () => {
+    setErrorMessage(null);
+    setLastReason(null);
+  };
+
+  // ── Retry manual do revalidate (para UI oferecer "Tentar novamente") ───
+  const retryRevalidate = async () => {
+    setErrorMessage(null);
+    setLastReason(null);
+    await loadAndRevalidate();
+  };
 
   const value: AuthContextValue = {
     status,
     session,
     errorMessage,
+    lastReason,
     hasSavedToken,
     activate,
     logout,
     forgetDevice,
     clearError,
+    retryRevalidate,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

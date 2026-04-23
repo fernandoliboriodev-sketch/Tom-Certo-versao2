@@ -44,7 +44,15 @@ const WHATSAPP_URL =
   'https://wa.me/5563992029322?text=Ol%C3%A1.%20Quero%20Token%20de%20acesso%20do%20aplicativo';
 
 export default function ActivationScreen() {
-  const { activate, errorMessage, clearError, hasSavedToken, forgetDevice } = useAuth();
+  const {
+    activate,
+    errorMessage,
+    clearError,
+    hasSavedToken,
+    forgetDevice,
+    lastReason,
+    retryRevalidate,
+  } = useAuth();
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -274,6 +282,38 @@ export default function ActivationScreen() {
                 <Ionicons name="alert-circle" size={15} color={C.red} />
                 <Text style={ss.errorTxt} numberOfLines={3}>{errorMessage}</Text>
               </Animated.View>
+            ) : null}
+
+            {/* ── Ações contextuais baseadas em lastReason (v11) ─────── */}
+            {(lastReason === 'device_limit' || lastReason === 'device_mismatch') && !showInput ? (
+              <TouchableOpacity
+                testID="clear-and-use-other-btn"
+                onPress={onUseAnotherToken}
+                activeOpacity={0.7}
+                style={ss.contextActionBtn}
+              >
+                <Ionicons name="swap-horizontal" size={15} color={C.amber} />
+                <Text style={ss.contextActionTxt}>Limpar e usar outro token</Text>
+              </TouchableOpacity>
+            ) : null}
+
+            {(lastReason === 'timeout' || lastReason === 'network') ? (
+              <TouchableOpacity
+                testID="retry-connection-btn"
+                onPress={async () => {
+                  clearError();
+                  if (!showInput) {
+                    setBusy(true);
+                    await retryRevalidate();
+                    setBusy(false);
+                  }
+                }}
+                activeOpacity={0.7}
+                style={ss.contextActionBtn}
+              >
+                <Ionicons name="refresh" size={15} color={C.amber} />
+                <Text style={ss.contextActionTxt}>Tentar conectar novamente</Text>
+              </TouchableOpacity>
             ) : null}
 
             {/* ── Botão principal ─────────────────────────────────────── */}
@@ -540,6 +580,27 @@ const ss = StyleSheet.create({
     marginBottom: 24,
     paddingHorizontal: 4,
     maxWidth: '90%',
+  },
+
+  // ── Botão de ação contextual (v11) — "Limpar e usar outro" / "Tentar novamente"
+  contextActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,176,32,0.35)',
+    backgroundColor: 'rgba(255,176,32,0.08)',
+    marginBottom: 14,
+  },
+  contextActionTxt: {
+    fontFamily: 'Manrope_600SemiBold',
+    fontSize: 12.5,
+    color: '#FFB020',
+    letterSpacing: 0.2,
   },
 
   // ── Mensagem de confiança ───────────────────────────────────────────
